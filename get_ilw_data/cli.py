@@ -86,7 +86,7 @@ def process(
         typer.echo('Pulling transactions and individuals from file cache.')
         set_of_giving_family_ids, set_of_giving_individual_ids, list_of_ilw_transactions, list_of_ilw_individuals = get_lists_from_file(config_log)
         with pd.ExcelFile(xlsx_input_file) as xlsx:
-            df_add_families = pd.read_excel(xlsx, sheet_name='AddFamilies')
+            df_add_families = pd.read_excel(xlsx, sheet_name='NonGivingFamilies')
             set_of_giving_family_ids.update(df_add_families['Family ID'].tolist())
         typer.echo('Done pulling transactions and individuals from file cache.')
     else:
@@ -95,7 +95,7 @@ def process(
         typer.echo('Done pulling transactions from CCB API.')
         typer.echo('Pulling individuals from CCB API...')
         with pd.ExcelFile(xlsx_input_file) as xlsx:
-            df_add_families = pd.read_excel(xlsx, sheet_name='AddFamilies')
+            df_add_families = pd.read_excel(xlsx, sheet_name='NonGivingFamilies')
             set_of_giving_family_ids.update(df_add_families['Family ID'].tolist())
         list_of_ilw_individuals = get_list_of_ilw_individuals(config, set_of_giving_family_ids)
         write_lists_to_file(config.prog_dir, set_of_giving_family_ids, set_of_giving_individual_ids, list_of_ilw_transactions, list_of_ilw_individuals)
