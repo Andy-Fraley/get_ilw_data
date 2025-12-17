@@ -78,7 +78,7 @@ def calculate_follow_ups(df_ilw_donations: pd.DataFrame) -> None:
             thank_you_note = 'TBD'
         else:
             thank_you_note = ''
-        if float(row['Amount']) >= 1000.0 or str(row['COA Category']) == 'Missions : Ingomar Living Waters : Projects':
+        if float(row['Amount']) >= 1000.0 or str(row['Simple COA']) == 'Missions : Ingomar Living Waters : Projects':
             assigned_project = 'TBD'
         else:
             assigned_project = ''

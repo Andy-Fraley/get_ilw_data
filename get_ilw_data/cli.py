@@ -21,6 +21,7 @@ import openpyxl
 from openpyxl import Workbook
 from openpyxl.comments import Comment
 from copy import copy
+import logging
 
 app = typer.Typer()
 
@@ -28,10 +29,12 @@ TIMESTAMP_FORMAT = '%Y%m%d%H%M%S'
 
 @app.command()
 def process(
-    xlsx_input_file: str = typer.Option(None, help="Path of XLSX input file."),
+    xlsx_input_file: str = typer.Option(None, help="Path of XLSX input file, which is normally Input.xlsx in the program directory."),
+    xlsx_output_file: str = typer.Option(None, help="Path for XLSX output file. If not specified, defaults to ilw_data_[YYYYMMDDhhmmss].xlsx in the 'tmp' subdirectory."),
     use_file_cache: bool = typer.Option(False, help="Use file cache instead of pulling from CCB API."),
     no_email: bool = typer.Option(False, help="Do not send notification emails."),
-    logging_level: str = typer.Option(LoggingLevel.warning.value, case_sensitive=False)
+    logging_level: str = typer.Option(LoggingLevel.warning.value, case_sensitive=False),
+    before_after_csvs: bool = typer.Option(False, help="Create CSVs in before_after_csvs subdirectory capturing state before and after applying overlay and concatenation data.")
 ):
     """
     Main processing pipeline for ILW data.
@@ -79,6 +82,30 @@ def process(
     else:
         if not os.path.exists(xlsx_input_file):
             raise RuntimeError(f"Specified XLSX input file, '{xlsx_input_file}', not found.")
+    
+    # Validate and process xlsx_output_file
+    if xlsx_output_file is not None:
+        # Ensure it has .xlsx extension
+        if not xlsx_output_file.lower().endswith('.xlsx'):
+            raise RuntimeError(f"Output file '{xlsx_output_file}' must have a .xlsx extension.")
+        
+        # Convert to absolute path if relative
+        # For relative paths, resolve them relative to the original working directory
+        # that was active when the script was called, not the current working directory
+        if not os.path.isabs(xlsx_output_file):
+            # Get the original working directory from environment variable if set by shell script
+            # Otherwise fall back to current working directory
+            original_cwd = os.environ.get('ORIGINAL_CWD', os.getcwd())
+            xlsx_output_file = os.path.join(original_cwd, xlsx_output_file)
+        
+        # Validate that the directory exists
+        output_dir = os.path.dirname(xlsx_output_file)
+        if not os.path.exists(output_dir):
+            raise RuntimeError(f"Directory '{output_dir}' does not exist for output file '{xlsx_output_file}'.")
+        
+        # Check if directory is writable
+        if not os.access(output_dir, os.W_OK):
+            raise RuntimeError(f"Directory '{output_dir}' is not writable for output file '{xlsx_output_file}'.")
 
     # Data acquisition
     if use_file_cache:
@@ -142,6 +169,13 @@ def process(
         df_ilw_individuals, set_of_giving_individual_ids)
     df_ilw_individuals = merge_down_alternate_name(df_ilw_individuals)
 
+    if before_after_csvs:
+        df_ilw_individuals.to_csv(os.path.join(config.prog_dir, 'before_after_csvs', 'individuals_before.csv'),
+                                  index=False)
+        df_ilw_transactions.to_csv(os.path.join(config.prog_dir, 'before_after_csvs', 'transactions_before.csv'),
+                                   index=False)
+        logging.debug("Saved 'before' CSVs, prior to overlay and concat.")
+
     # Overlay and concat
     with pd.ExcelFile(xlsx_input_file) as xlsx:
         df_overlay = pd.read_excel(xlsx, sheet_name='IndividualUpdate')
@@ -174,9 +208,35 @@ def process(
         set_of_giving_family_ids.update(df_ilw_transactions_w_new_family_id['Family ID'].tolist())
 
     df_ilw_individuals.sort_values(by=['Last', 'First'], inplace=True)
+    
+    # Add Full Name column before Email column
+    df_ilw_individuals['Full Name'] = df_ilw_individuals['First'] + ' ' + df_ilw_individuals['Last']
+    
+    # Add Full Email column after Email column
+    df_ilw_individuals['Full Email'] = df_ilw_individuals.apply(
+        lambda row: '' if (pd.isna(row['Email']) or row['Email'] == '' or 
+                          str(row['First']).startswith('[DECEASED]'))
+        else f"{row['Full Name']} <{row['Email']}>", axis=1
+    )
+    
+    # Reorder columns to place Full Name before Email and Full Email after Email
+    cols = df_ilw_individuals.columns.tolist()
+    email_index = cols.index('Email')
+    # Insert Full Name before Email
+    cols.insert(email_index, cols.pop(cols.index('Full Name')))
+    # Insert Full Email after Email (email_index + 1 because Full Name was inserted before)
+    cols.insert(email_index + 2, cols.pop(cols.index('Full Email')))
+    df_ilw_individuals = df_ilw_individuals[cols]
+
+    if before_after_csvs:
+        df_ilw_individuals.to_csv(os.path.join(config.prog_dir, 'before_after_csvs', 'individuals_after.csv'),
+                                  index=False)
+        df_ilw_transactions.to_csv(os.path.join(config.prog_dir, 'before_after_csvs', 'transactions_after.csv'),
+                                   index=False)
+        logging.debug("Saved 'after' CSVs, after overlay and concat.")
 
     # Family DataFrame
-    list_families = [['Family ID', 'Name(s)', 'Email(s)', 'Primary ID', 'Spouse ID']]
+    list_families = [['Family ID', 'Name(s)', 'Full Email(s)', 'Primary ID', 'Spouse ID']]
     mapping_dicts = get_mapping_dicts(df_ilw_individuals)
     for family_id in set_of_giving_family_ids:
         couple_names, couple_emails, first_in_couple, second_in_couple = get_pretty_emails_from_fam(
@@ -184,9 +244,12 @@ def process(
         list_families.append([family_id, couple_names, couple_emails, first_in_couple, second_in_couple])
     df_ilw_families = list_to_dataframe(list_families)
 
-    df_ilw_individuals = pd.merge(df_ilw_individuals, df_ilw_families[['Family ID', 'Email(s)']],
-        left_on='Family ID', right_on='Family ID', how='left')
-    df_ilw_individuals.rename(columns={'Email(s)': 'Couple Email(s)'}, inplace=True)
+    # DROP "Couple Email(s)" from "Individuals (CCB Overlaid"" tab
+    #df_ilw_individuals = pd.merge(df_ilw_individuals, df_ilw_families[['Family ID', 'Email(s)']],
+    #    left_on='Family ID', right_on='Family ID', how='left')
+    #df_ilw_individuals.rename(columns={'Email(s)': 'Couple Email(s)'}, inplace=True)
+
+    # !!! Add "Individual Email" here in "XYZ <abc@xyz.com>" format
 
     # Donations DataFrame
     df_ilw_donations = pd.merge(df_ilw_transactions, df_ilw_individuals, left_on='Ind ID', right_on='Ind ID', how='left')
@@ -197,9 +260,9 @@ def process(
     df_ilw_donations['Thank You Note'] = ''
     df_ilw_donations['Assigned Project'] = ''
     df_ilw_donations.rename(columns={'Family ID_x': 'Family ID', 'Mailing Zip_x': 'Mailing Zip',
-        'Email': 'Donor Email'}, inplace=True)
+        'Email': 'Donor Email', 'COA Category': 'Simple COA'}, inplace=True)
     df_ilw_donations = df_ilw_donations[['Date', 'Amount', 'First', 'Last', 'Thank You Note', 'Assigned Project',
-        'COA Category', 'Tax Deductible', 'Payment Type', 'Donor Email', 'Couple Emails', 'Couple Names',
+        'Simple COA', 'Tax Deductible', 'Payment Type', 'Donor Email', 'Couple Emails', 'Couple Names',
         'Mailing Street', 'Mailing City', 'Mailing State', 'Mailing Zip', 'Home Phone', 'Mobile Phone', 'Ind ID',
         'Family ID', 'Comments']]
     calculate_follow_ups(df_ilw_donations)
@@ -214,7 +277,7 @@ def process(
     empty_row = pd.Series([None] * len(df_ilw_summary.columns), dtype='float')
     for fam_id in df_add_families['Family ID'].values:
         df_ilw_summary.loc[fam_id] = empty_row
-    df_ilw_sponsorships = df_ilw_donations[df_ilw_donations['COA Category'] == 'Sponsorships & Tickets']. \
+    df_ilw_sponsorships = df_ilw_donations[df_ilw_donations['Simple COA'] == 'Sponsorships & Tickets']. \
         pivot_table(index=['Family ID'], columns=['Year'], values=['Amount'], aggfunc='sum')
     df_ilw_sponsorships.columns = [str(c_list[1]) for c_list in df_ilw_sponsorships.columns.values]
     df_ilw_sponsorships['All-Time Sponsorships'] = df_ilw_sponsorships.select_dtypes(include=['number']).sum(axis=1)
@@ -252,13 +315,16 @@ def process(
         lambda row: '' if pd.isnull(row['Spouse ID']) else mapping_dicts.ind2row[row['Spouse ID']]['Mobile Phone'],
         axis=1)
     columns_list = ['Name(s)', 'All-Time Sponsorships', str_last_year_rename] + year_columns + \
-        ['Last', 'Email(s)', 'Home Phone', 'Primary Mobile Phone', 'Spouse Mobile Phone', 'Mailing Street', \
+        ['Last', 'Full Email(s)', 'Home Phone', 'Primary Mobile Phone', 'Spouse Mobile Phone', 'Mailing Street', \
          'Mailing City', 'Mailing State', 'Mailing Zip', 'Family ID', 'Primary ID', 'Spouse ID']
     df_ilw_summary = df_ilw_summary[columns_list]
 
+    # Add Simple COA column using dict_coa_remap
+    df_ilw_transactions['Simple COA'] = df_ilw_transactions['COA Category'].map(dict_coa_remap)
+    
     df_ilw_transactions = df_ilw_transactions[['Date', 'Amount', 'Name', 'Ind ID', 'Family ID',
         'Family Position', 'Gender', 'Age', 'Transaction ID', 'Batch ID', 'Batch Name',
-        'Transaction Grouping', 'COA Category', 'Payment Type', 'Check Number', 'Memo', 'Tax Deductible',
+        'Transaction Grouping', 'COA Category', 'Simple COA', 'Payment Type', 'Check Number', 'Memo', 'Tax Deductible',
         'Comments']]
     df_ilw_transactions.sort_values(by=['Date'], ascending=False, inplace=True)
 
@@ -269,21 +335,27 @@ def process(
             overall_giving[row['Family ID']] = {}
         if not row['Year'] in overall_giving[row['Family ID']]:
             overall_giving[row['Family ID']][row['Year']] = {}
-        if not row['COA Category'] in overall_giving[row['Family ID']][row['Year']]:
-            overall_giving[row['Family ID']][row['Year']][row['COA Category']] = 0
-        overall_giving[row['Family ID']][row['Year']][row['COA Category']] += row['Amount']
+        if not row['Simple COA'] in overall_giving[row['Family ID']][row['Year']]:
+            overall_giving[row['Family ID']][row['Year']][row['Simple COA']] = 0
+        overall_giving[row['Family ID']][row['Year']][row['Simple COA']] += row['Amount']
 
     # Drop Year column from Donations tab
     df_ilw_donations = df_ilw_donations.drop(columns=['Year'], axis=1)
 
     # Write to output file
-    output_filename = os.path.join(config.prog_dir, 'tmp', f'ilw_data_{config.datetime_start_string}.xlsx')
+    if xlsx_output_file is not None:
+        output_filename = xlsx_output_file
+    else:
+        # Ensure tmp directory exists
+        tmp_dir = os.path.join(config.prog_dir, 'tmp')
+        os.makedirs(tmp_dir, exist_ok=True)
+        output_filename = os.path.join(tmp_dir, f'ilw_data_{config.datetime_start_string}.xlsx')
     with pd.ExcelWriter(output_filename) as writer:
-        df_ilw_summary.to_excel(writer, sheet_name='Summary (by year)', index=False)
+        df_ilw_summary.to_excel(writer, sheet_name='Summary By Year', index=False)
         df_ilw_donations.to_excel(writer, sheet_name='Donations', index=False)
-        df_ilw_individuals.to_excel(writer, sheet_name='Individuals (CCB Overlaid)', index=False)
-        df_ilw_transactions.to_excel(writer, sheet_name='Transactions (CCB Overlaid)', index=False)
-        df_ilw_families.to_excel(writer, sheet_name='Families (CCB Overlaid)', index=False)
+        df_ilw_individuals.to_excel(writer, sheet_name='Individuals', index=False)
+        df_ilw_transactions.to_excel(writer, sheet_name='Transactions', index=False)
+        df_ilw_families.to_excel(writer, sheet_name='Families', index=False)
 
     # Reload workbook for formatting
     workbook = openpyxl.load_workbook(output_filename)
@@ -301,7 +373,7 @@ def process(
     set_column_widths(worksheet, column_widths)
 
     # Summary sheet formatting
-    worksheet = workbook['Summary (by year)']
+    worksheet = workbook['Summary By Year']
     filters = worksheet.auto_filter
     filters.ref = 'A1:AD' + str(worksheet.max_row)
     for c in range(ord('B'), ord('B') + len(year_columns)):
@@ -343,37 +415,50 @@ def process(
         cell.alignment = new_align
 
     # Individuals sheet formatting
-    worksheet = workbook['Individuals (CCB Overlaid)']
+    worksheet = workbook['Individuals']
     filters = worksheet.auto_filter
-    filters.ref = 'A1:AP' + str(worksheet.max_row)
+    filters.ref = 'A1:AQ' + str(worksheet.max_row)
     column_widths = {
-        'A': 12, 'B': 14, 'C': 19, 'D': 12, 'E': 18, 'F': 21, 'G': 18, 'H': 21, 'I': 12, 'J': 31, 'K': 71,
-        'L': 20, 'M': 18, 'N': 16, 'O': 20, 'P': 20, 'Q': 21, 'R': 23, 'S': 17, 'T': 23, 'U': 19, 'V': 14,
-        'W': 17, 'X': 13, 'Y': 18, 'Z': 28, 'AA': 18, 'AB': 18, 'AC': 23, 'AD': 24, 'AE': 18, 'AF': 19,
-        'AG': 12, 'AH': 14, 'AI': 26, 'AJ': 25, 'AK': 21, 'AL': 14, 'AM': 19, 'AN': 20, 'AO': 25, 'AP': 108
+        'A': 11, 'B': 14, 'C': 18, 'D': 11, 'E': 17, 'F': 19, 'G': 17, 'H': 20, 'I': 11, 'J': 33, 'K': 30, 'L': 47, 
+        'M': 70, 'N': 20, 'O': 17, 'P': 15, 'Q': 19, 'R': 19, 'S': 21, 'T': 22, 'U': 16, 'V': 22, 'W': 18, 'X': 13, 
+        'Y': 16, 'Z': 13, 'AA': 17, 'AB': 28, 'AC': 18, 'AD': 17, 'AE': 22, 'AF': 23, 'AG': 17, 'AH': 18, 'AI': 11, 
+        'AJ': 13, 'AK': 25, 'AL': 25, 'AM': 21, 'AN': 13, 'AO': 18, 'AP': 19, 'AQ': 24
     }
     set_column_widths(worksheet, column_widths)
+    
+    # Color the Full Name and Full Email column headers light blue
+    from openpyxl.styles import PatternFill
+    light_blue_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid')
+    worksheet['J1'].fill = light_blue_fill  # Full Name column
+    worksheet['L1'].fill = light_blue_fill  # Full Email column
 
     # Transactions sheet formatting
-    worksheet = workbook['Transactions (CCB Overlaid)']
+    worksheet = workbook['Transactions']
     filters = worksheet.auto_filter
-    filters.ref = 'A1:R' + str(worksheet.max_row)
+    filters.ref = 'A1:S' + str(worksheet.max_row)
     set_column_number_format(worksheet, 'A', 'm/d/yy')
     set_column_number_format(worksheet, 'B', '$#,##0.00')
     column_widths = {
-        'A': 11, 'B': 14, 'C': 34, 'D': 12, 'E': 14, 'F': 19, 'G': 13, 'H': 10, 'I': 18, 'J': 14, 'K': 29,
-        'L': 24, 'M': 52, 'N': 18, 'O': 19, 'P': 51, 'Q': 19, 'R': 41
+        'A': 10, 'B': 13, 'C': 33, 'D': 11, 'E': 14, 'F': 18, 'G': 13, 'H': 10, 'I': 18, 'J': 13, 'K': 38, 'L': 23, 
+        'M': 59, 'N': 19, 'O': 18, 'P': 18, 'Q': 50, 'R': 18, 'S': 44
     }
     set_column_widths(worksheet, column_widths)
+    
+    # Color the Simple COA column header light blue
+    worksheet['N1'].fill = light_blue_fill  # Simple COA column
 
     # Families sheet formatting
-    worksheet = workbook['Families (CCB Overlaid)']
+    worksheet = workbook['Families']
     filters = worksheet.auto_filter
     filters.ref = 'A1:E' + str(worksheet.max_row)
     column_widths = {
         'A': 14, 'B': 38, 'C': 109, 'D': 15, 'E': 15
     }
     set_column_widths(worksheet, column_widths)
+    
+    # Color the Name(s) and Full Email(s) column headers light blue
+    worksheet['B1'].fill = light_blue_fill  # Name(s) column
+    worksheet['C1'].fill = light_blue_fill  # Full Email(s) column
 
     workbook.save(output_filename)
     typer.echo(f'Wrote ILW data to {output_filename}')
