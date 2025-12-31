@@ -4,6 +4,7 @@ import datetime
 import os
 import glob
 import subprocess
+import re
 import pandas as pd
 from ansible_vault import Vault
 from .config import Config
@@ -27,6 +28,113 @@ import logging
 app = typer.Typer()
 
 TIMESTAMP_FORMAT = '%Y%m%d%H%M%S'
+
+# COA abbreviation mapping
+COA_ABBREV_MAP = {
+    'P': 'Projects',
+    'WF': 'Water Filters',
+    'GD': 'General Donation',
+    'A': 'Auctions',
+    'ST': 'Sponsorships & Tickets'
+}
+
+def parse_project_assignments(project_assignments_path):
+    """
+    Parse the Project Assignments tab and track recharacterizations.
+    
+    Returns:
+        dict: Mapping of Find codes to total recharacterization amounts
+    """
+    recharacterizations = {}
+    
+    try:
+        with pd.ExcelFile(project_assignments_path) as xlsx:
+            df_project_assignments = pd.read_excel(xlsx, sheet_name='Project Assignments')
+    except Exception as e:
+        logging.error(f"Failed to read Project Assignments tab: {e}")
+        raise
+    
+    # Pattern for validating the fixed-format suffix: Date-Dollar_Amount-COA_Abbreviation
+    # We parse from the end backwards to allow dashes in First and Last names
+    # Example: Rotary Club-Rich-Mar-20231119-$1,000.00-GD or Brooks-Jan-20250404-$5,635.52-GD
+    # The last 3 components are always: Date (8 digits), Amount (with optional commas and cents), COA (letters)
+    suffix_pattern = re.compile(r'^(.*?)-(\d{8})-\$?([\d,]+\.[\d]{2})-([A-Z]+)$')
+    
+    for index, row in df_project_assignments.iterrows():
+        find_value = row.get('Find', '')
+        amount_raw = row.get('Amount', 0)
+        placeholder_value = row.get('Placeholder Value', '')
+        full_names = row.get('Full Name(s)', '')
+        
+        # Parse Amount column - handle currency formatting like "$2,743.13"
+        if pd.isna(amount_raw):
+            amount = 0.0
+        elif isinstance(amount_raw, str):
+            # Remove $ and commas, then convert to float
+            amount = float(amount_raw.replace('$', '').replace(',', ''))
+        else:
+            amount = float(amount_raw)
+        
+        # Convert find_value to string and handle NaN/None
+        if pd.isna(find_value):
+            find_value = ''
+        else:
+            find_value = str(find_value).strip()
+        
+        # Handle blank or #N/A entries
+        if find_value == '' or find_value == '#N/A':
+            logging.warning(f"Funding is not yet matched for ${amount:,.2f} towards {placeholder_value} project by {full_names}")
+            continue
+        
+        # Ignore *AUTO MATCH* entries
+        if find_value == '*AUTO MATCH*':
+            continue
+        
+        # Parse from the end: extract Date-Amount-COA, leaving Last-First at the beginning
+        match = suffix_pattern.match(find_value)
+        if not match:
+            logging.error(f"Invalid Find column format: '{find_value}' does not follow expected pattern Last-First-Date-Dollar_Amount-COA_Abbreviation")
+            continue
+        
+        name_part, date_str, dollar_amount_str, coa_abbrev = match.groups()
+        
+        # Now parse the name_part as Last-First (split on the last dash)
+        # This allows dashes within Last or First names
+        name_parts = name_part.rsplit('-', 1)
+        if len(name_parts) != 2:
+            logging.error(f"Invalid Find column format: '{find_value}' - cannot parse Last-First from '{name_part}'")
+            continue
+        
+        last_name, first_name = name_parts
+        
+        # Validate COA abbreviation
+        if coa_abbrev not in COA_ABBREV_MAP:
+            logging.error(f"Invalid COA abbreviation in Find column: '{find_value}' has unknown COA abbreviation '{coa_abbrev}'. Valid values are: {', '.join(COA_ABBREV_MAP.keys())}")
+            continue
+        
+        # Ignore 'P' (Projects) entries as they don't need recharacterization
+        if coa_abbrev == 'P':
+            continue
+        
+        # Parse the donation amount from the Find column
+        donation_amount = float(dollar_amount_str.replace(',', ''))
+        
+        # Validate that recharacterization amount doesn't exceed donation amount
+        if amount > donation_amount:
+            logging.error(f"Recharacterization amount ${amount:,.2f} exceeds donation amount ${donation_amount:,.2f} in Find column: '{find_value}'")
+            continue
+        
+        # This entry needs recharacterization
+        matched_coa = COA_ABBREV_MAP[coa_abbrev]
+        logging.debug(f"${amount:,.2f} of ${donation_amount:,.2f} contribution by {first_name} {last_name} needs to be recharacterized from {matched_coa} to Projects")
+        
+        # Add to recharacterization dictionary
+        if find_value in recharacterizations:
+            recharacterizations[find_value] += amount
+        else:
+            recharacterizations[find_value] = amount
+    
+    return recharacterizations
 
 @app.command()
 def process(
@@ -71,6 +179,10 @@ def process(
     except FileNotFoundError:
         logging.error(f"Pull script not found at {pull_script_path}")
         raise RuntimeError(f"Pull script not found at {pull_script_path}")
+
+    # Parse project assignments and track recharacterizations
+    project_assignments_path = os.path.join(input_dir, 'project_assignments.xlsx')
+    recharacterizations = parse_project_assignments(project_assignments_path)
 
     # Pull info from vault file to support email notifications and enable CCB access
     secrets_files = glob.glob(os.path.join(config.prog_dir, '.secrets_*'))
@@ -483,6 +595,22 @@ def process(
 
     workbook.save(output_filename)
     typer.echo(f'Wrote ILW data to {output_filename}')
+
+    # Output recharacterization dictionary only if logging level is DEBUG
+    if logging.getLogger().getEffectiveLevel() == logging.DEBUG:
+        typer.echo("\n" + "="*80)
+        typer.echo("RECHARACTERIZATIONS SUMMARY")
+        typer.echo("="*80)
+        if recharacterizations:
+            typer.echo(f"\nFound {len(recharacterizations)} recharacterization(s):\n")
+            total_amount = 0
+            for find_code, amount in sorted(recharacterizations.items()):
+                typer.echo(f"  {find_code}: ${amount:,.2f}")
+                total_amount += amount
+            typer.echo(f"\nTotal amount to be recharacterized to Projects: ${total_amount:,.2f}")
+        else:
+            typer.echo("\nNo recharacterizations found.")
+        typer.echo("="*80 + "\n")
 
 if __name__ == "__main__":
     app() 
