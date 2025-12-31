@@ -3,6 +3,7 @@ import locale
 import datetime
 import os
 import glob
+import subprocess
 import pandas as pd
 from ansible_vault import Vault
 from .config import Config
@@ -34,7 +35,8 @@ def process(
     use_file_cache: bool = typer.Option(False, help="Use file cache instead of pulling from CCB API."),
     no_email: bool = typer.Option(False, help="Do not send notification emails."),
     logging_level: str = typer.Option(LoggingLevel.warning.value, case_sensitive=False),
-    before_after_csvs: bool = typer.Option(False, help="Create CSVs in before_after_csvs subdirectory capturing state before and after applying overlay and concatenation data.")
+    before_after_csvs: bool = typer.Option(False, help="Create CSVs in before_after_csvs subdirectory capturing state before and after applying overlay and concatenation data."),
+    get_now: bool = typer.Option(False, help="Force retrieval of fresh project_assignments.xlsx from remote source, ignoring 24-hour cache.")
 ):
     """
     Main processing pipeline for ILW data.
@@ -50,6 +52,25 @@ def process(
 
     # Set up logging
     setup_logging(config, logging_level)
+
+    # Retrieve project_assignments.xlsx before any data processing
+    pull_script_path = '/Users/afraley/Documents/src/sh/pull_latest_ilw_data/pull_latest_project_assignments.sh'
+    input_dir = os.path.join(config.prog_dir, 'input')
+    os.makedirs(input_dir, exist_ok=True)
+    
+    pull_cmd = [pull_script_path, '--target-dir', input_dir]
+    if get_now:
+        pull_cmd.append('--get-now')
+    
+    try:
+        result = subprocess.run(pull_cmd, check=True, capture_output=True, text=True)
+        logging.info(f"Retrieved input/project_assignments.xlsx")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Failed to retrieve project_assignments.xlsx: {e.stderr}")
+        raise RuntimeError(f"Failed to retrieve project_assignments.xlsx: {e.stderr}")
+    except FileNotFoundError:
+        logging.error(f"Pull script not found at {pull_script_path}")
+        raise RuntimeError(f"Pull script not found at {pull_script_path}")
 
     # Pull info from vault file to support email notifications and enable CCB access
     secrets_files = glob.glob(os.path.join(config.prog_dir, '.secrets_*'))

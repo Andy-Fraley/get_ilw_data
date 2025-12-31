@@ -22,18 +22,29 @@ This is a Python application for processing "Ingomar Living Waters" (ILW) donati
 **Purpose**: Command-line interface using Typer framework that orchestrates the entire data processing pipeline.
 
 **Key Functions**:
-- `process()` - Main command with options for input file, caching, email notifications, logging level
+- `process()` - Main command with options for input file, caching, email notifications, logging level, and project assignments retrieval
 - Handles vault-based credential management for CCB and Gmail access
 - Processes Excel input files with multiple sheets (IndividualUpdate, IndividualConcat, CoaRemap, etc.)
+- Retrieves `project_assignments.xlsx` from remote source before processing
 - Generates comprehensive Excel output with multiple formatted sheets
+
+**Command-Line Options**:
+- `--xlsx-input-file` - Path to input Excel file (defaults to Input.xlsx)
+- `--xlsx-output-file` - Path for output Excel file (defaults to timestamped file in tmp/)
+- `--use-file-cache` - Use cached data instead of CCB API
+- `--no-email` - Skip email notifications
+- `--logging-level` - Set logging verbosity (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+- `--before-after-csvs` - Generate before/after CSV snapshots
+- `--get-now` - Force fresh retrieval of project_assignments.xlsx from remote source (ignores 24-hour cache)
 
 **Data Flow**:
 1. Load configuration and credentials from vault
-2. Extract data from CCB API or file cache
-3. Process and transform DataFrames
-4. Apply overlays and concatenations from input Excel
-5. Generate family groupings and donation summaries
-6. Create formatted Excel output with multiple sheets
+2. Retrieve `project_assignments.xlsx` from remote source via `pull_latest_project_assignments.sh`
+3. Extract data from CCB API or file cache
+4. Process and transform DataFrames
+5. Apply overlays and concatenations from input Excel
+6. Generate family groupings and donation summaries
+7. Create formatted Excel output with multiple sheets
 
 **Output Sheets**:
 - Summary (by year) - Pivot table of donations by family/year
@@ -118,8 +129,13 @@ This is a Python application for processing "Ingomar Living Waters" (ILW) donati
 ## Data Processing Pipeline
 
 ### Input Sources
-1. **CCB API**: Transaction and individual data via authenticated sessions
-2. **Excel Input File**: Manual overrides and configurations with sheets:
+1. **Project Assignments File**: Retrieved from Google Drive via `pull_latest_project_assignments.sh`
+   - Location: `input/project_assignments.xlsx`
+   - Contains project assignment data for augmenting donation processing
+   - Uses 24-hour caching by default; force refresh with `--get-now` flag
+   - Integrated with `/Users/afraley/Documents/src/sh/pull_latest_ilw_data/` utilities
+2. **CCB API**: Transaction and individual data via authenticated sessions
+3. **Excel Input File**: Manual overrides and configurations with sheets:
    - IndividualUpdate: Manual corrections to individual records
    - IndividualConcat: Additional individuals to include
    - CoaRemap: Chart of Accounts category remapping
@@ -127,12 +143,16 @@ This is a Python application for processing "Ingomar Living Waters" (ILW) donati
    - NonGivingFamilies: Families to include even without donations
 
 ### Processing Steps
-1. **Data Extraction**: Pull transactions and individuals from CCB API or cache
-2. **Data Cleaning**: Handle deceased individuals, remap child donations
-3. **Manual Overlays**: Apply Excel-based corrections and additions
-4. **Family Grouping**: Generate family contact information and email formatting
-5. **Donation Analysis**: Calculate follow-up requirements and yearly summaries
-6. **Excel Generation**: Create formatted multi-sheet workbook with formulas and comments
+1. **Project Assignments Retrieval**: Fetch latest `project_assignments.xlsx` from Google Drive
+   - Uses shared cache directory with other ILW utilities
+   - Respects 24-hour freshness check unless `--get-now` is specified
+   - Logs INFO message upon successful retrieval
+2. **Data Extraction**: Pull transactions and individuals from CCB API or cache
+3. **Data Cleaning**: Handle deceased individuals, remap child donations
+4. **Manual Overlays**: Apply Excel-based corrections and additions
+5. **Family Grouping**: Generate family contact information and email formatting
+6. **Donation Analysis**: Calculate follow-up requirements and yearly summaries
+7. **Excel Generation**: Create formatted multi-sheet workbook with formulas and comments
 
 ### Output Features
 - Auto-filtering on all sheets
@@ -169,7 +189,30 @@ This is a Python application for processing "Ingomar Living Waters" (ILW) donati
 
 ## Usage Pattern
 Typically run periodically (monthly/quarterly) to:
-1. Extract latest donation data from CCB
-2. Apply any manual corrections via Excel input
-3. Generate formatted reports for ministry leadership
-4. Send email notifications upon completion
+1. Retrieve latest project assignments from Google Drive
+2. Extract latest donation data from CCB
+3. Apply any manual corrections via Excel input
+4. Generate formatted reports for ministry leadership
+5. Send email notifications upon completion
+
+### Example Usage
+
+**Standard run (uses cached project_assignments.xlsx if less than 24 hours old)**:
+```bash
+./get_ilw_data.sh
+```
+
+**Force fresh project assignments retrieval**:
+```bash
+./get_ilw_data.sh --get-now
+```
+
+**With custom output file and logging**:
+```bash
+./get_ilw_data.sh --get-now --xlsx-output-file report.xlsx --logging-level INFO
+```
+
+**Use cached CCB data (for testing)**:
+```bash
+./get_ilw_data.sh --use-file-cache --logging-level DEBUG
+```
