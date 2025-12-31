@@ -174,7 +174,8 @@ def get_pretty_emails_from_fam(fam_id: int, mapping_dicts: MappingDicts, ind_df:
     group_name = ''
     group_email = ''
     if fam_id not in mapping_dicts.fam2inds:
-        print(f'Cannot find Family ID: {fam_id}')
+        logging.error(f'Family ID {fam_id} specified in NonGivingFamilies tab does not exist in CCB')
+        return ('', '', None, None)
     inds_in_family = mapping_dicts.fam2inds[fam_id]
     if only_include is not None:
         reason_left_church = mapping_dicts.ind2row[only_include]['Reason Left Church']
