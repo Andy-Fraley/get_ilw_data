@@ -38,6 +38,9 @@ COA_ABBREV_MAP = {
     'ST': 'Sponsorships & Tickets'
 }
 
+# Reverse mapping: COA full name to abbreviation
+COA_REVERSE_MAP = {v: k for k, v in COA_ABBREV_MAP.items()}
+
 def parse_project_assignments(project_assignments_path):
     """
     Parse the Project Assignments tab and track recharacterizations.
@@ -135,6 +138,96 @@ def parse_project_assignments(project_assignments_path):
             recharacterizations[find_value] = amount
     
     return recharacterizations
+
+def create_match_string(row):
+    """
+    Create a Match string for a donation row in the format:
+    Last-First-YYYYMMDD-$Amount-COA_Abbrev
+    
+    Args:
+        row: A pandas Series representing a donation row
+    
+    Returns:
+        str: Match string in the required format
+    """
+    last = str(row['Last'])
+    first = str(row['First'])
+    date_str = row['Date'].strftime('%Y%m%d')
+    amount_str = f"${row['Amount']:,.2f}"
+    coa_abbrev = COA_REVERSE_MAP.get(row['Simple COA'], '')
+    
+    if not coa_abbrev:
+        return None
+    
+    return f"{last}-{first}-{date_str}-{amount_str}-{coa_abbrev}"
+
+def apply_recharacterizations(df_donations, recharacterizations):
+    """
+    Apply recharacterizations to a donations DataFrame.
+    
+    For each donation row:
+    1. Create a Match string
+    2. Check if it exists in the recharacterizations dictionary
+    3. If found:
+       - If recharacterization amount equals donation amount: change COA to Projects
+       - If recharacterization amount < donation amount: split into two rows
+    
+    Args:
+        df_donations: DataFrame of donations to recharacterize
+        recharacterizations: Dictionary mapping Match strings to recharacterization amounts
+    
+    Returns:
+        tuple: (DataFrame with recharacterizations applied, set of used match strings)
+    """
+    # Create a copy to avoid modifying the original
+    df = df_donations.copy()
+    
+    # Track which recharacterization entries are used
+    used_entries = set()
+    
+    # List to collect new rows (for split donations)
+    new_rows = []
+    rows_to_drop = []
+    
+    for idx, row in df.iterrows():
+        match_string = create_match_string(row)
+        
+        if match_string and match_string in recharacterizations:
+            rechar_amount = recharacterizations[match_string]
+            donation_amount = row['Amount']
+            
+            # Mark this entry as used
+            used_entries.add(match_string)
+            
+            if abs(rechar_amount - donation_amount) < 0.01:  # Equal (accounting for float precision)
+                # Simple case: change COA to Projects
+                df.at[idx, 'Simple COA'] = 'Projects'
+                logging.debug(f"Recharacterized full amount ${donation_amount:,.2f} for {row['First']} {row['Last']} to Projects")
+            elif rechar_amount < donation_amount:
+                # Split case: reduce original amount and create new Projects row
+                remaining_amount = donation_amount - rechar_amount
+                df.at[idx, 'Amount'] = remaining_amount
+                
+                # Create new row for the recharacterized portion
+                new_row = row.copy()
+                new_row['Amount'] = rechar_amount
+                new_row['Simple COA'] = 'Projects'
+                new_rows.append((idx, new_row))
+                
+                logging.debug(f"Split donation for {row['First']} {row['Last']}: ${remaining_amount:,.2f} remains in {row['Simple COA']}, ${rechar_amount:,.2f} to Projects")
+            else:
+                # This shouldn't happen due to validation, but log if it does
+                logging.error(f"Recharacterization amount ${rechar_amount:,.2f} exceeds donation amount ${donation_amount:,.2f} for match string: {match_string}")
+    
+    # Insert new rows right after their corresponding original rows
+    # Sort by index in reverse order to maintain correct positions
+    for orig_idx, new_row in sorted(new_rows, key=lambda x: x[0], reverse=True):
+        # Get the position after the original row
+        pos = df.index.get_loc(orig_idx) + 1
+        # Insert the new row
+        df = pd.concat([df.iloc[:pos], pd.DataFrame([new_row]), df.iloc[pos:]]).reset_index(drop=True)
+    
+    return df, used_entries
 
 @app.command()
 def process(
@@ -447,7 +540,11 @@ def process(
     df_ilw_summary['Spouse Mobile Phone'] = df_ilw_summary.apply(
         lambda row: '' if pd.isnull(row['Spouse ID']) else mapping_dicts.ind2row[row['Spouse ID']]['Mobile Phone'],
         axis=1)
-    columns_list = ['Name(s)', 'All-Time Sponsorships', str_last_year_rename] + year_columns + \
+    
+    # Filter year_columns to only include years that actually exist in the dataframe
+    existing_year_columns = [col for col in year_columns if col in df_ilw_summary.columns]
+    
+    columns_list = ['Name(s)', 'All-Time Sponsorships', str_last_year_rename] + existing_year_columns + \
         ['Last', 'Full Email(s)', 'Home Phone', 'Primary Mobile Phone', 'Spouse Mobile Phone', 'Mailing Street', \
          'Mailing City', 'Mailing State', 'Mailing Zip', 'Family ID', 'Primary ID', 'Spouse ID']
     df_ilw_summary = df_ilw_summary[columns_list]
@@ -472,8 +569,28 @@ def process(
             overall_giving[row['Family ID']][row['Year']][row['Simple COA']] = 0
         overall_giving[row['Family ID']][row['Year']][row['Simple COA']] += row['Amount']
 
-    # Drop Year column from Donations tab
+    # Create Recharacterized Donations tab by applying recharacterizations
+    # Need to do this before dropping Year column since apply_recharacterizations needs the data
+    df_ilw_recharacterized, used_rechar_entries = apply_recharacterizations(df_ilw_donations, recharacterizations)
+    
+    # Validate: Check for unused recharacterization entries
+    unused_entries = set(recharacterizations.keys()) - used_rechar_entries
+    if unused_entries:
+        logging.error(f"Found {len(unused_entries)} recharacterization entries that were not matched:")
+        for entry in sorted(unused_entries):
+            logging.error(f"  Unmatched recharacterization entry: {entry} (${recharacterizations[entry]:,.2f})")
+    
+    # Validate: Total amounts should be equal between Original and Recharacterized Donations
+    original_total = df_ilw_donations['Amount'].sum()
+    recharacterized_total = df_ilw_recharacterized['Amount'].sum()
+    if abs(original_total - recharacterized_total) > 0.01:  # Allow for small floating point differences
+        logging.error(f"Total amounts do not match: Original Donations = ${original_total:,.2f}, Recharacterized Donations = ${recharacterized_total:,.2f}, Difference = ${abs(original_total - recharacterized_total):,.2f}")
+    else:
+        logging.debug(f"Total amounts validated: Original = ${original_total:,.2f}, Recharacterized = ${recharacterized_total:,.2f}")
+    
+    # Drop Year column from both Donations tabs
     df_ilw_donations = df_ilw_donations.drop(columns=['Year'], axis=1)
+    df_ilw_recharacterized = df_ilw_recharacterized.drop(columns=['Year'], axis=1)
 
     # Write to output file
     if xlsx_output_file is not None:
@@ -485,7 +602,8 @@ def process(
         output_filename = os.path.join(tmp_dir, f'ilw_data_{config.datetime_start_string}.xlsx')
     with pd.ExcelWriter(output_filename) as writer:
         df_ilw_summary.to_excel(writer, sheet_name='Summary By Year', index=False)
-        df_ilw_donations.to_excel(writer, sheet_name='Donations', index=False)
+        df_ilw_donations.to_excel(writer, sheet_name='Original Donations', index=False)
+        df_ilw_recharacterized.to_excel(writer, sheet_name='Recharacterized Donations', index=False)
         df_ilw_individuals.to_excel(writer, sheet_name='Individuals', index=False)
         df_ilw_transactions.to_excel(writer, sheet_name='Transactions', index=False)
         df_ilw_families.to_excel(writer, sheet_name='Families', index=False)
@@ -493,8 +611,20 @@ def process(
     # Reload workbook for formatting
     workbook = openpyxl.load_workbook(output_filename)
 
-    # Donations sheet formatting
-    worksheet = workbook['Donations']
+    # Original Donations sheet formatting
+    worksheet = workbook['Original Donations']
+    filters = worksheet.auto_filter
+    filters.ref = 'A1:U' + str(worksheet.max_row)
+    set_column_number_format(worksheet, 'A', 'm/d/yy')
+    set_column_number_format(worksheet, 'B', '$#,##0.00')
+    column_widths = {
+        'A': 10, 'B': 13, 'C': 18, 'D': 19, 'E': 18, 'F': 19, 'G': 19, 'H': 17, 'I': 17, 'J': 45,
+        'K': 110, 'L': 30, 'M': 69, 'N': 19, 'O': 16, 'P': 15, 'Q': 22, 'R': 22, 'S': 10, 'T': 14, 'U': 39
+    }
+    set_column_widths(worksheet, column_widths)
+
+    # Recharacterized Donations sheet formatting
+    worksheet = workbook['Recharacterized Donations']
     filters = worksheet.auto_filter
     filters.ref = 'A1:U' + str(worksheet.max_row)
     set_column_number_format(worksheet, 'A', 'm/d/yy')
@@ -597,7 +727,7 @@ def process(
     typer.echo(f'Wrote ILW data to {output_filename}')
 
     # Output recharacterization dictionary only if logging level is DEBUG
-    if logging.getLogger().getEffectiveLevel() == logging.DEBUG:
+    if logging.getLogger().getEffectiveLevel() <= logging.DEBUG:
         typer.echo("\n" + "="*80)
         typer.echo("RECHARACTERIZATIONS SUMMARY")
         typer.echo("="*80)
