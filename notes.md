@@ -80,11 +80,13 @@ This is a Python application for processing "Ingomar Living Waters" (ILW) donati
 **Purpose**: Core data processing, DataFrame operations, and business logic.
 
 **Key Functions**:
+- `safe_str()` - Helper function that converts values to strings, treating NaN as empty string (handles `<None>` replacements)
 - `preprocess_deceased_individuals()` - Marks deceased individuals with [DECEASED] prefix
 - `drop_or_remap_children_givers()` - Maps child donations to parents, removes non-giving children
 - `merge_down_alternate_name()` - Handles preferred vs legal names
 - `calculate_follow_ups()` - Flags donations requiring thank you notes (≥$100) or project assignments (≥$1000)
-- `get_pretty_emails_from_fam()` - Complex logic for generating family email strings with proper formatting
+- `get_pretty_emails_from_fam()` - Complex logic for generating family email strings with proper formatting (uses `safe_str()` to handle NaN values)
+- `get_mapping_dicts()` - Builds lookup dictionaries for individuals/families (skips NaN email values)
 - `reload_names_and_emails()` - Updates donation records with formatted family contact info
 - File caching system for avoiding repeated API calls
 
@@ -92,6 +94,7 @@ This is a Python application for processing "Ingomar Living Waters" (ILW) donati
 - Family email formatting handles various scenarios (couples with same/different last names, deceased spouses, single individuals)
 - Child donation remapping ensures gifts are attributed to parents
 - Excel cell location calculations for comment placement
+- NaN value handling throughout to support `<None>` property clearing in IndividualUpdate tab
 
 ### 5. `email_utils.py` - Email Notifications
 **Purpose**: Gmail-based email notifications for administrators.
@@ -136,11 +139,14 @@ This is a Python application for processing "Ingomar Living Waters" (ILW) donati
    - Integrated with `/Users/afraley/Documents/src/sh/pull_latest_ilw_data/` utilities
 2. **CCB API**: Transaction and individual data via authenticated sessions
 3. **Excel Input File**: Manual overrides and configurations with sheets:
-   - IndividualUpdate: Manual corrections to individual records
-   - IndividualConcat: Additional individuals to include
-   - CoaRemap: Chart of Accounts category remapping
-   - MatchedTransactions: Transaction overrides
-   - NonGivingFamilies: Families to include even without donations
+   - **IndividualUpdate**: Manual corrections to individual records
+     - Use `<None>` in any cell to clear/delete that property value in the output
+     - Empty cells leave the original CCB value unchanged
+     - `<None>` values are converted to blank cells after the overlay merge
+   - **IndividualConcat**: Additional individuals to include
+   - **CoaRemap**: Chart of Accounts category remapping
+   - **MatchedTransactions**: Transaction overrides
+   - **NonGivingFamilies**: Families to include even without donations
 
 ### Processing Steps
 1. **Project Assignments Retrieval**: Fetch latest `project_assignments.xlsx` from Google Drive
