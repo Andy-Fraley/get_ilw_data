@@ -16,6 +16,12 @@ import os
 # - drop_or_remap_children_givers
 # - etc.
 
+def safe_str(value: Any) -> str:
+    """Convert a value to string, treating NaN as empty string."""
+    if pd.isna(value):
+        return ''
+    return str(value)
+
 def get_cell_loc(df_ilw_summary: pd.DataFrame, fam_id: int, year: int, curr_year: int) -> Tuple[int, int]:
     """
     Get the Excel cell location for a family/year in the summary DataFrame.
@@ -154,7 +160,8 @@ def get_mapping_dicts(df_ilw_individuals: pd.DataFrame) -> MappingDicts:
             mapping_dicts.fam2inds[fam_id] = []
         mapping_dicts.fam2inds[fam_id].append(ind_id)
         mapping_dicts.ind2fam[ind_id] = fam_id
-        mapping_dicts.email2ind[row['Email'].lower()] = ind_id
+        if pd.notna(row['Email']):
+            mapping_dicts.email2ind[row['Email'].lower()] = ind_id
         mapping_dicts.ind2row[ind_id] = row
     return mapping_dicts
 
@@ -242,112 +249,112 @@ def get_pretty_emails_from_fam(fam_id: int, mapping_dicts: MappingDicts, ind_df:
 
 
     if first_in_couple and second_in_couple:
-        if mapping_dicts.ind2row[first_in_couple]['Last'] == mapping_dicts.ind2row[second_in_couple]['Last']:
-            if mapping_dicts.ind2row[first_in_couple]['Email'] == '':
+        if safe_str(mapping_dicts.ind2row[first_in_couple]['Last']) == safe_str(mapping_dicts.ind2row[second_in_couple]['Last']):
+            if safe_str(mapping_dicts.ind2row[first_in_couple]['Email']) == '':
                 slot1 = None
             else:
                 slot1 = \
-                    mapping_dicts.ind2row[first_in_couple]['First'] + '* & ' + \
-                    mapping_dicts.ind2row[second_in_couple]['First'] + ' ' + \
-                    mapping_dicts.ind2row[first_in_couple]['Last'] + ' <' + \
-                    mapping_dicts.ind2row[first_in_couple]['Email'] + '>'
+                    safe_str(mapping_dicts.ind2row[first_in_couple]['First']) + '* & ' + \
+                    safe_str(mapping_dicts.ind2row[second_in_couple]['First']) + ' ' + \
+                    safe_str(mapping_dicts.ind2row[first_in_couple]['Last']) + ' <' + \
+                    safe_str(mapping_dicts.ind2row[first_in_couple]['Email']) + '>'
             if only_include is None:
-                if mapping_dicts.ind2row[first_in_couple]['Email'] == \
-                   mapping_dicts.ind2row[second_in_couple]['Email'] or \
-                   mapping_dicts.ind2row[first_in_couple]['Email'] == '' or \
-                   mapping_dicts.ind2row[second_in_couple]['Email'] == '':
-                    if mapping_dicts.ind2row[first_in_couple]['Email'] == '':
-                        email = mapping_dicts.ind2row[second_in_couple]['Email']
-                    elif mapping_dicts.ind2row[second_in_couple]['Email'] == '':
-                        email = mapping_dicts.ind2row[first_in_couple]['Email']
-                    elif mapping_dicts.ind2row[first_in_couple]['Email'] == \
-                         mapping_dicts.ind2row[second_in_couple]['Email']:
-                        email = mapping_dicts.ind2row[first_in_couple]['Email']
+                if safe_str(mapping_dicts.ind2row[first_in_couple]['Email']) == \
+                   safe_str(mapping_dicts.ind2row[second_in_couple]['Email']) or \
+                   safe_str(mapping_dicts.ind2row[first_in_couple]['Email']) == '' or \
+                   safe_str(mapping_dicts.ind2row[second_in_couple]['Email']) == '':
+                    if safe_str(mapping_dicts.ind2row[first_in_couple]['Email']) == '':
+                        email = safe_str(mapping_dicts.ind2row[second_in_couple]['Email'])
+                    elif safe_str(mapping_dicts.ind2row[second_in_couple]['Email']) == '':
+                        email = safe_str(mapping_dicts.ind2row[first_in_couple]['Email'])
+                    elif safe_str(mapping_dicts.ind2row[first_in_couple]['Email']) == \
+                         safe_str(mapping_dicts.ind2row[second_in_couple]['Email']):
+                        email = safe_str(mapping_dicts.ind2row[first_in_couple]['Email'])
                     else:
                         assert(False)
                     if email == '':
                         slot1 = None
                     else:
                         slot1 = \
-                            mapping_dicts.ind2row[first_in_couple]['First'] + ' & ' + \
-                            mapping_dicts.ind2row[second_in_couple]['First'] + ' ' + \
-                            mapping_dicts.ind2row[first_in_couple]['Last'] + ' <' + \
+                            safe_str(mapping_dicts.ind2row[first_in_couple]['First']) + ' & ' + \
+                            safe_str(mapping_dicts.ind2row[second_in_couple]['First']) + ' ' + \
+                            safe_str(mapping_dicts.ind2row[first_in_couple]['Last']) + ' <' + \
                             email + '>'
                 else:
-                    if mapping_dicts.ind2row[second_in_couple]['Email'] == '':
+                    if safe_str(mapping_dicts.ind2row[second_in_couple]['Email']) == '':
                         slot2 = None
                     else:
                         slot2 = \
-                            mapping_dicts.ind2row[first_in_couple]['First'] + ' & ' + \
-                            mapping_dicts.ind2row[second_in_couple]['First'] + '* ' + \
-                            mapping_dicts.ind2row[first_in_couple]['Last'] + ' <' + \
-                            mapping_dicts.ind2row[second_in_couple]['Email'] + '>'
-            group_name = mapping_dicts.ind2row[first_in_couple]['First'] + ' & ' + \
-                        mapping_dicts.ind2row[second_in_couple]['First'] + ' ' + \
-                        mapping_dicts.ind2row[first_in_couple]['Last']
+                            safe_str(mapping_dicts.ind2row[first_in_couple]['First']) + ' & ' + \
+                            safe_str(mapping_dicts.ind2row[second_in_couple]['First']) + '* ' + \
+                            safe_str(mapping_dicts.ind2row[second_in_couple]['Last']) + ' <' + \
+                            safe_str(mapping_dicts.ind2row[second_in_couple]['Email']) + '>'
+            group_name = safe_str(mapping_dicts.ind2row[first_in_couple]['First']) + ' & ' + \
+                        safe_str(mapping_dicts.ind2row[second_in_couple]['First']) + ' ' + \
+                        safe_str(mapping_dicts.ind2row[first_in_couple]['Last'])
 
         else:
-            if mapping_dicts.ind2row[first_in_couple]['Email'] == '':
+            if safe_str(mapping_dicts.ind2row[first_in_couple]['Email']) == '':
                 slot1 = None
             else:
                 slot1 = \
-                    mapping_dicts.ind2row[first_in_couple]['First'] + '* ' + \
-                    mapping_dicts.ind2row[first_in_couple]['Last'] + ' & ' + \
-                    mapping_dicts.ind2row[second_in_couple]['First'] + ' ' + \
-                    mapping_dicts.ind2row[second_in_couple]['Last'] + ' <' + \
-                    mapping_dicts.ind2row[first_in_couple]['Email'] + '>'
+                    safe_str(mapping_dicts.ind2row[first_in_couple]['First']) + '* ' + \
+                    safe_str(mapping_dicts.ind2row[first_in_couple]['Last']) + ' & ' + \
+                    safe_str(mapping_dicts.ind2row[second_in_couple]['First']) + ' ' + \
+                    safe_str(mapping_dicts.ind2row[second_in_couple]['Last']) + ' <' + \
+                    safe_str(mapping_dicts.ind2row[first_in_couple]['Email']) + '>'
             if only_include is None:
-                if mapping_dicts.ind2row[first_in_couple]['Email'] == \
-                   mapping_dicts.ind2row[second_in_couple]['Email'] or \
-                   mapping_dicts.ind2row[first_in_couple]['Email'] == '' or \
-                   mapping_dicts.ind2row[second_in_couple]['Email'] == '':
-                    if mapping_dicts.ind2row[first_in_couple]['Email'] == '':
-                        email = mapping_dicts.ind2row[second_in_couple]['Email']
-                    elif mapping_dicts.ind2row[second_in_couple]['Email'] == '':
-                        email = mapping_dicts.ind2row[first_in_couple]['Email']
-                    elif mapping_dicts.ind2row[first_in_couple]['Email'] == \
-                         mapping_dicts.ind2row[second_in_couple]['Email']:
-                        email = mapping_dicts.ind2row[first_in_couple]['Email']
+                if safe_str(mapping_dicts.ind2row[first_in_couple]['Email']) == \
+                   safe_str(mapping_dicts.ind2row[second_in_couple]['Email']) or \
+                   safe_str(mapping_dicts.ind2row[first_in_couple]['Email']) == '' or \
+                   safe_str(mapping_dicts.ind2row[second_in_couple]['Email']) == '':
+                    if safe_str(mapping_dicts.ind2row[first_in_couple]['Email']) == '':
+                        email = safe_str(mapping_dicts.ind2row[second_in_couple]['Email'])
+                    elif safe_str(mapping_dicts.ind2row[second_in_couple]['Email']) == '':
+                        email = safe_str(mapping_dicts.ind2row[first_in_couple]['Email'])
+                    elif safe_str(mapping_dicts.ind2row[first_in_couple]['Email']) == \
+                         safe_str(mapping_dicts.ind2row[second_in_couple]['Email']):
+                        email = safe_str(mapping_dicts.ind2row[first_in_couple]['Email'])
                     else:
                         assert(False)
                     if email == '':
                         slot1 = None
                     else: 
                         slot1 = \
-                            mapping_dicts.ind2row[first_in_couple]['First'] + ' ' + \
-                            mapping_dicts.ind2row[first_in_couple]['Last'] + ' & ' + \
-                            mapping_dicts.ind2row[second_in_couple]['First'] + ' ' + \
-                            mapping_dicts.ind2row[second_in_couple]['Last'] + ' <' + \
+                            safe_str(mapping_dicts.ind2row[first_in_couple]['First']) + ' ' + \
+                            safe_str(mapping_dicts.ind2row[first_in_couple]['Last']) + ' & ' + \
+                            safe_str(mapping_dicts.ind2row[second_in_couple]['First']) + ' ' + \
+                            safe_str(mapping_dicts.ind2row[second_in_couple]['Last']) + ' <' + \
                             email + '>'
                 else:
-                    if mapping_dicts.ind2row[second_in_couple]['Email'] == '':
+                    if safe_str(mapping_dicts.ind2row[second_in_couple]['Email']) == '':
                         slot2 = None
                     else:
                         slot2 = \
-                            mapping_dicts.ind2row[first_in_couple]['First'] + ' ' + \
-                            mapping_dicts.ind2row[first_in_couple]['Last'] + ' & ' + \
-                            mapping_dicts.ind2row[second_in_couple]['First'] + '* ' + \
-                            mapping_dicts.ind2row[second_in_couple]['Last'] + ' <' + \
-                            mapping_dicts.ind2row[second_in_couple]['Email'] + '>'
+                            safe_str(mapping_dicts.ind2row[first_in_couple]['First']) + ' ' + \
+                            safe_str(mapping_dicts.ind2row[first_in_couple]['Last']) + ' & ' + \
+                            safe_str(mapping_dicts.ind2row[second_in_couple]['First']) + '* ' + \
+                            safe_str(mapping_dicts.ind2row[second_in_couple]['Last']) + ' <' + \
+                            safe_str(mapping_dicts.ind2row[second_in_couple]['Email']) + '>'
 
-            group_name = mapping_dicts.ind2row[first_in_couple]['First'] + ' ' + \
-                        mapping_dicts.ind2row[first_in_couple]['Last'] + ' & ' + \
-                        mapping_dicts.ind2row[second_in_couple]['First'] + ' ' + \
-                        mapping_dicts.ind2row[second_in_couple]['Last']
+            group_name = safe_str(mapping_dicts.ind2row[first_in_couple]['First']) + ' ' + \
+                        safe_str(mapping_dicts.ind2row[first_in_couple]['Last']) + ' & ' + \
+                        safe_str(mapping_dicts.ind2row[second_in_couple]['First']) + ' ' + \
+                        safe_str(mapping_dicts.ind2row[second_in_couple]['Last'])
 
     elif first_in_couple or second_in_couple:
         if second_in_couple:
             first_in_couple = second_in_couple
             second_in_couple = None
-        if mapping_dicts.ind2row[first_in_couple]['Email'] == '':
+        if safe_str(mapping_dicts.ind2row[first_in_couple]['Email']) == '':
             slot1 = None
         else:
             slot1 = \
-                mapping_dicts.ind2row[first_in_couple]['First'] + ' ' + \
-                mapping_dicts.ind2row[first_in_couple]['Last'] + ' <' + \
-                mapping_dicts.ind2row[first_in_couple]['Email'] + '>'
-        group_name = mapping_dicts.ind2row[first_in_couple]['First'] + ' ' + \
-            mapping_dicts.ind2row[first_in_couple]['Last']
+                safe_str(mapping_dicts.ind2row[first_in_couple]['First']) + ' ' + \
+                safe_str(mapping_dicts.ind2row[first_in_couple]['Last']) + ' <' + \
+                safe_str(mapping_dicts.ind2row[first_in_couple]['Email']) + '>'
+        group_name = safe_str(mapping_dicts.ind2row[first_in_couple]['First']) + ' ' + \
+            safe_str(mapping_dicts.ind2row[first_in_couple]['Last'])
 
     if slot1 is not None:
         if slot2 is not None:

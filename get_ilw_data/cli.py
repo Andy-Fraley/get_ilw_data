@@ -412,6 +412,8 @@ def process(
         df_overlay.set_index('Ind ID', inplace=True)
         df_ilw_individuals.set_index('Ind ID', inplace=True)
         df_ilw_individuals.update(df_overlay, overwrite=True)
+        # Replace all <None> string values with NaN to make them blank in output
+        df_ilw_individuals.replace('<None>', np.nan, inplace=True)
         df_ilw_individuals.reset_index(inplace=True)
         df_concat = pd.read_excel(xlsx, sheet_name='IndividualConcat').fillna('')
         df_concat['Ind ID'] = df_concat['Ind ID'].astype(np.int64)
