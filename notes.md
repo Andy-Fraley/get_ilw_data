@@ -47,11 +47,12 @@ This is a Python application for processing "Ingomar Living Waters" (ILW) donati
 7. Create formatted Excel output with multiple sheets
 
 **Output Sheets**:
-- Summary (by year) - Pivot table of donations by family/year
-- Donations - Individual donation records with follow-up flags
-- Individuals (CCB Overlaid) - Person records with manual updates applied
-- Transactions (CCB Overlaid) - Raw transaction data
-- Families (CCB Overlaid) - Family contact information
+- Summary By Year - Pivot table of donations by family/year
+- Original Donations - Individual donation records with follow-up flags (before recharacterization)
+- Recharacterized Donations - Donation records after applying project assignment recharacterizations
+- Individuals - Person records with manual updates applied
+- Transactions - Raw transaction data
+- Families - Family contact information
 
 ### 2. `config.py` - Configuration Management
 **Purpose**: Dataclass holding runtime configuration and state.
@@ -156,9 +157,20 @@ This is a Python application for processing "Ingomar Living Waters" (ILW) donati
 2. **Data Extraction**: Pull transactions and individuals from CCB API or cache
 3. **Data Cleaning**: Handle deceased individuals, remap child donations
 4. **Manual Overlays**: Apply Excel-based corrections and additions
-5. **Family Grouping**: Generate family contact information and email formatting
-6. **Donation Analysis**: Calculate follow-up requirements and yearly summaries
-7. **Excel Generation**: Create formatted multi-sheet workbook with formulas and comments
+5. **Donation Recharacterization**: Apply project assignment recharacterizations
+   - Parses "Project Assignments" tab from `project_assignments.xlsx`
+   - Matches donations using format: `Last-First-YYYYMMDD-$Amount-COA_Abbrev`
+   - Ignores `*AUTO MATCH*` entries and donations already categorized as Projects (P)
+   - For non-Projects donations (GD, WF, S&T) that need recharacterization:
+     - **Full recharacterization**: If recharacterization amount equals donation amount, changes COA to "Projects"
+     - **Partial recharacterization**: If recharacterization amount is less than donation amount, splits into two rows (one for remaining original COA, one for Projects portion)
+   - Validates that recharacterization amounts don't exceed donation amounts
+   - Validates total amounts match between Original and Recharacterized Donations tabs
+   - Logs errors for unmatched recharacterization entries
+   - Supported COA abbreviations: P (Projects), WF (Water Filters), GD (General Donation), S&T (Sponsorships & Tickets)
+6. **Family Grouping**: Generate family contact information and email formatting
+7. **Donation Analysis**: Calculate follow-up requirements and yearly summaries
+8. **Excel Generation**: Create formatted multi-sheet workbook with formulas and comments
 
 ### Output Features
 - Auto-filtering on all sheets
