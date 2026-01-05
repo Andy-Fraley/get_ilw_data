@@ -637,6 +637,13 @@ def process(
     # Insert Full Email after Email (email_index + 1 because Full Name was inserted before)
     cols.insert(email_index + 2, cols.pop(cols.index('Full Email')))
     df_ilw_individuals = df_ilw_individuals[cols]
+    
+    # Check for duplicate First+Last name combinations
+    name_groups = df_ilw_individuals.groupby(['First', 'Last'])['Ind ID'].apply(list)
+    duplicates = name_groups[name_groups.apply(len) > 1]
+    for (first, last), ind_ids in duplicates.items():
+        ind_ids_str = ', '.join(str(id) for id in ind_ids)
+        logging.warning(f"Duplicate name found: '{first} {last}' - Individual IDs: {ind_ids_str}")
 
     if before_after_csvs:
         df_ilw_individuals.to_csv(os.path.join(config.prog_dir, 'before_after_csvs', 'individuals_after.csv'),
