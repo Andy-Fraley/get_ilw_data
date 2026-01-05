@@ -257,7 +257,7 @@ def apply_recharacterizations(df_donations, recharacterizations):
     
     return df, used_entries
 
-def check_inverse_recharacterizations(df_donations, df_individuals, project_assignments_path):
+def check_inverse_recharacterizations(df_donations, df_individuals, df_families, project_assignments_path):
     """
     Check for cases where Projects donations don't match Project Assignments.
     
@@ -268,6 +268,7 @@ def check_inverse_recharacterizations(df_donations, df_individuals, project_assi
     Args:
         df_donations: DataFrame of donations (must have Year column)
         df_individuals: DataFrame of individuals (for mapping names to Family IDs)
+        df_families: DataFrame with family information (for Name(s) column)
         project_assignments_path: Path to project_assignments.xlsx file
     
     Returns:
@@ -382,7 +383,15 @@ def check_inverse_recharacterizations(df_donations, df_individuals, project_assi
         
         family_total_project_assignments[year][family_id] += amount
     
-    # Step 4: Compare totals and log warnings/errors
+    # Step 4: Create family_id to Name(s) mapping from Families DataFrame
+    family_names = {}
+    for idx, row in df_families.iterrows():
+        family_id = row.get('Family ID')
+        name = row.get('Name(s)', '')
+        if family_id:
+            family_names[family_id] = name
+    
+    # Step 5: Compare totals and log warnings/errors
     # Also collect cases that need inverse recharacterization
     inverse_rechar_cases = {}  # (year, family_id) -> (donations_total, assignments_total)
     
@@ -397,6 +406,7 @@ def check_inverse_recharacterizations(df_donations, df_individuals, project_assi
         for family_id in sorted(all_families):
             donations_total = donations_by_family.get(family_id, 0)
             assignments_total = assignments_by_family.get(family_id, 0)
+            family_name = family_names.get(family_id, f'Family {family_id}')
             
             if abs(donations_total - assignments_total) <= 0.01:
                 # Totals match - this is good
@@ -410,13 +420,13 @@ def check_inverse_recharacterizations(df_donations, df_individuals, project_assi
                 
                 # Log as DEBUG if $0 in assignments, WARNING otherwise
                 if assignments_total == 0:
-                    logging.debug(f"Family {family_id} in {year}: Projects donations ${donations_total:,.2f} with $0 Project Assignments - will recharacterize to General Donation")
+                    logging.debug(f"Family {family_id} ({family_name}) in {year}: Projects donations ${donations_total:,.2f} with $0 Project Assignments - will recharacterize to General Donation")
                 else:
-                    logging.warning(f"Family {family_id} in {year}: Projects donations ${donations_total:,.2f} exceed Project Assignments ${assignments_total:,.2f} by ${excess:,.2f} - inverse recharacterization needed")
+                    logging.warning(f"Family {family_id} ({family_name}) in {year}: Projects donations ${donations_total:,.2f} exceed Project Assignments ${assignments_total:,.2f} by ${excess:,.2f} - inverse recharacterization needed")
             else:
                 # Project assignments exceed Projects donations - this is an error
                 shortfall = assignments_total - donations_total
-                logging.error(f"Family {family_id} in {year}: Project Assignments ${assignments_total:,.2f} exceed Projects donations ${donations_total:,.2f} by ${shortfall:,.2f}")
+                logging.error(f"Family {family_id} ({family_name}) in {year}: Project Assignments ${assignments_total:,.2f} exceed Projects donations ${donations_total:,.2f} by ${shortfall:,.2f}")
     
     return inverse_rechar_cases
 
@@ -889,7 +899,7 @@ def process(
     
     # Check for inverse recharacterization cases (for years 2018+)
     # This validates that Projects donations match Project Assignments per family/year
-    inverse_rechar_cases = check_inverse_recharacterizations(df_ilw_recharacterized, df_ilw_individuals, project_assignments_path)
+    inverse_rechar_cases = check_inverse_recharacterizations(df_ilw_recharacterized, df_ilw_individuals, df_ilw_families, project_assignments_path)
     
     # Apply inverse recharacterizations for $0 Project Assignments cases
     # This modifies the DataFrame to recharacterize Projects to General Donation
