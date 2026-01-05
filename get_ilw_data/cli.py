@@ -649,8 +649,35 @@ def process(
         manual_ids = [id for id in ind_ids if id >= 100000]
         
         if len(manual_ids) == 0:
-            # All IDs are from CCB (< 100000)
-            logging.warning(f"Duplicate name found: '{first} {last}' - Individual IDs: {ind_ids_str} - May be duplicate individuals in CCB")
+            # All IDs are from CCB (< 100000) - check mailing addresses
+            # Get mailing addresses for all CCB IDs
+            addresses = []
+            for ind_id in ccb_ids:
+                ind_row = df_ilw_individuals[df_ilw_individuals['Ind ID'] == ind_id].iloc[0]
+                street = str(ind_row.get('Mailing Street', '')).strip()
+                city = str(ind_row.get('Mailing City', '')).strip()
+                state = str(ind_row.get('Mailing State', '')).strip()
+                zip_code = str(ind_row.get('Mailing Zip', '')).strip()
+                
+                # Handle NaN values
+                if street == 'nan': street = ''
+                if city == 'nan': city = ''
+                if state == 'nan': state = ''
+                if zip_code == 'nan': zip_code = ''
+                
+                address = f"{street}, {city}, {state} {zip_code}".strip(', ')
+                addresses.append(address)
+            
+            # Check if all addresses are the same
+            unique_addresses = set(addresses)
+            if len(unique_addresses) == 1:
+                # Same address - likely true duplicate
+                address = addresses[0] if addresses[0] else '(no address)'
+                logging.error(f"Duplicate name found: '{first} {last}' - Individual IDs: {ind_ids_str} - May be duplicate individuals in CCB - Same mailing address: {address}")
+            else:
+                # Different addresses - likely different people with same name
+                addresses_str = '; '.join([f"ID {ccb_ids[i]}: {addresses[i] if addresses[i] else '(no address)'}" for i in range(len(ccb_ids))])
+                logging.debug(f"Duplicate name found: '{first} {last}' - Individual IDs: {ind_ids_str} - May be duplicate individuals in CCB - Different mailing addresses: {addresses_str}")
         elif len(ccb_ids) == 0:
             # All IDs are manual additions (>= 100000)
             logging.error(f"Duplicate name found: '{first} {last}' - Individual IDs: {ind_ids_str} - Two individuals added manually in IndividualConcat tab of Input.xlsx are likely duplicates of each other")
