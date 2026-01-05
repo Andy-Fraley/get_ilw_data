@@ -257,120 +257,27 @@ def apply_recharacterizations(df_donations, recharacterizations):
     
     return df, used_entries
 
-def parse_project_matches(project_assignments_path):
+def check_inverse_recharacterizations(df_donations, df_individuals, project_assignments_path):
     """
-    Parse the Project Assignments tab and sum amounts by Match string.
+    Check for cases where Projects donations don't match Project Assignments.
     
-    Returns:
-        tuple: (dict mapping Match strings to total funded amounts,
-                dict mapping Match strings to Family IDs)
-    """
-    match_funding = {}
-    match_family_ids = {}
+    For years 2018+, compares each family's total Projects donations against their
+    total Project Assignments amounts. Logs WARNING if donations exceed assignments,
+    and ERROR if assignments exceed donations.
     
-    try:
-        with pd.ExcelFile(project_assignments_path) as xlsx:
-            df_project_assignments = pd.read_excel(xlsx, sheet_name='Project Assignments')
-    except Exception as e:
-        logging.error(f"Failed to read Project Assignments tab: {e}")
-        raise
-    
-    # Pattern for validating Match column format
-    suffix_pattern = re.compile(r'^(.*?)-(\d{8})-\$?([\d,]+\.[\d]{2})-([A-Z]+)$')
-    
-    for index, row in df_project_assignments.iterrows():
-        match_value = row.get('Match', '')
-        amount_raw = row.get('Amount', 0)
-        family_id = row.get('Family ID', '')
-        
-        # Parse Amount column
-        if pd.isna(amount_raw):
-            amount = 0.0
-        elif isinstance(amount_raw, str):
-            amount = float(amount_raw.replace('$', '').replace(',', ''))
-        else:
-            amount = float(amount_raw)
-        
-        # Convert match_value to string and handle NaN/None
-        if pd.isna(match_value):
-            match_value = ''
-        else:
-            match_value = str(match_value).strip()
-        
-        # Skip blank, #N/A, or *AUTO MATCH* entries
-        if match_value == '' or match_value == '#N/A' or match_value == '*AUTO MATCH*':
-            continue
-        
-        # Validate Match format
-        match = suffix_pattern.match(match_value)
-        if not match:
-            logging.warning(f"Invalid Match column format: '{match_value}' does not follow expected pattern")
-            continue
-        
-        # Sum amounts by Match string
-        if match_value in match_funding:
-            match_funding[match_value] += amount
-        else:
-            match_funding[match_value] = amount
-            match_family_ids[match_value] = family_id
-    
-    return match_funding, match_family_ids
-
-def apply_inverse_recharacterizations(df_donations, match_funding, match_family_ids):
-    """
-    Apply inverse recharacterizations to Projects donations.
-    
-    For years 2018+, ensures that each family's total Projects donations match their
-    total funded projects. Any excess Projects donations are recharacterized back to
-    General Donation, regardless of whether they were originally Projects or recharacterized
-    TO Projects.
+    Does NOT modify the donations DataFrame - only performs validation and logging.
     
     Args:
         df_donations: DataFrame of donations (must have Year column)
-        match_funding: Dictionary mapping Match strings to total funded amounts
-        match_family_ids: Dictionary mapping Match strings to Family IDs
+        df_individuals: DataFrame of individuals (for mapping names to Family IDs)
+        project_assignments_path: Path to project_assignments.xlsx file
     
     Returns:
-        DataFrame with inverse recharacterizations applied
+        DataFrame unchanged
     """
-    # Create a copy to avoid modifying the original
-    df = df_donations.copy()
-    
-    # Ensure Comments column exists
-    if 'Comments' not in df.columns:
-        df['Comments'] = ''
-    
-    # Step 1: Calculate total funded projects per family per year (2018+)
-    family_year_funding = {}
-    for match_string, funded_amount in match_funding.items():
-        family_id = match_family_ids.get(match_string)
-        if not family_id or pd.isna(family_id):
-            continue
-        
-        # Extract year from match string (format: Last-First-YYYYMMDD-$Amount-COA)
-        parts = match_string.split('-')
-        if len(parts) < 4:
-            continue
-        
-        date_str = parts[-3]
-        if len(date_str) != 8:
-            continue
-        
-        year = int(date_str[:4])
-        
-        if year < 2018:
-            continue
-        
-        if family_id not in family_year_funding:
-            family_year_funding[family_id] = {}
-        if year not in family_year_funding[family_id]:
-            family_year_funding[family_id][year] = 0
-        
-        family_year_funding[family_id][year] += funded_amount
-    
-    # Step 2: Calculate total Projects donations per family per year (2018+)
-    family_year_projects = {}
-    for idx, row in df.iterrows():
+    # Step 1: Calculate total Projects donations per family per year (2018+)
+    family_total_projects_donations = {}
+    for idx, row in df_donations.iterrows():
         if row['Simple COA'] != 'Projects':
             continue
         
@@ -380,102 +287,120 @@ def apply_inverse_recharacterizations(df_donations, match_funding, match_family_
         
         family_id = row['Family ID']
         
-        if family_id not in family_year_projects:
-            family_year_projects[family_id] = {}
-        if year not in family_year_projects[family_id]:
-            family_year_projects[family_id][year] = 0
+        if year not in family_total_projects_donations:
+            family_total_projects_donations[year] = {}
+        if family_id not in family_total_projects_donations[year]:
+            family_total_projects_donations[year][family_id] = 0
         
-        family_year_projects[family_id][year] += row['Amount']
+        family_total_projects_donations[year][family_id] += row['Amount']
     
-    # Step 3: Identify families/years with excess Projects donations
-    families_needing_rechar = {}
-    for family_id, years in family_year_projects.items():
-        for year, projects_total in years.items():
-            funded_total = family_year_funding.get(family_id, {}).get(year, 0)
+    # Step 2: Read Project Assignments and map names to Family IDs
+    try:
+        with pd.ExcelFile(project_assignments_path) as xlsx:
+            df_project_assignments = pd.read_excel(xlsx, sheet_name='Project Assignments')
+    except Exception as e:
+        logging.error(f"Failed to read Project Assignments tab: {e}")
+        return df_donations
+    
+    # Create name-to-family mapping from Individuals tab
+    name_to_family = {}
+    for idx, row in df_individuals.iterrows():
+        first = str(row.get('First', '')).strip()
+        last = str(row.get('Last', '')).strip()
+        family_id = row.get('Family ID', '')
+        
+        if first and last and family_id:
+            # Use First-Last as key (case-insensitive)
+            key = f"{first.lower()}-{last.lower()}"
+            name_to_family[key] = family_id
+    
+    # Step 3: Calculate total Project Assignments per family per year (2018+)
+    family_total_project_assignments = {}
+    
+    for idx, row in df_project_assignments.iterrows():
+        amount_raw = row.get('Amount', 0)
+        match_value = row.get('Match', '')
+        
+        # Parse Amount
+        if pd.isna(amount_raw):
+            amount = 0.0
+        elif isinstance(amount_raw, str):
+            amount = float(amount_raw.replace('$', '').replace(',', ''))
+        else:
+            amount = float(amount_raw)
+        
+        # Skip if no match or invalid match
+        if pd.isna(match_value) or match_value == '' or match_value == '#N/A' or match_value == '*AUTO MATCH*':
+            continue
+        
+        match_value = str(match_value).strip()
+        
+        # Parse Match string: Last-First-YYYYMMDD-$Amount-COA
+        # Extract from the end backwards
+        suffix_pattern = re.compile(r'^(.*?)-(\d{8})-\$?([\d,]+\.[\d]{2})-([A-Z]+)$')
+        match = suffix_pattern.match(match_value)
+        if not match:
+            continue
+        
+        name_part, date_str, dollar_amount_str, coa_abbrev = match.groups()
+        
+        # Parse Last-First from name_part
+        name_parts = name_part.rsplit('-', 1)
+        if len(name_parts) != 2:
+            continue
+        
+        last_name, first_name = name_parts
+        
+        # Extract year
+        if len(date_str) != 8:
+            continue
+        year = int(date_str[:4])
+        
+        if year < 2018:
+            continue
+        
+        # Map name to Family ID
+        key = f"{first_name.lower()}-{last_name.lower()}"
+        family_id = name_to_family.get(key)
+        
+        if not family_id:
+            logging.warning(f"Could not map '{first_name} {last_name}' from Project Assignments to a Family ID")
+            continue
+        
+        # Add to totals
+        if year not in family_total_project_assignments:
+            family_total_project_assignments[year] = {}
+        if family_id not in family_total_project_assignments[year]:
+            family_total_project_assignments[year][family_id] = 0
+        
+        family_total_project_assignments[year][family_id] += amount
+    
+    # Step 4: Compare totals and log warnings/errors
+    all_years = set(family_total_projects_donations.keys()) | set(family_total_project_assignments.keys())
+    
+    for year in sorted(all_years):
+        donations_by_family = family_total_projects_donations.get(year, {})
+        assignments_by_family = family_total_project_assignments.get(year, {})
+        
+        all_families = set(donations_by_family.keys()) | set(assignments_by_family.keys())
+        
+        for family_id in sorted(all_families):
+            donations_total = donations_by_family.get(family_id, 0)
+            assignments_total = assignments_by_family.get(family_id, 0)
             
-            if projects_total > funded_total + 0.01:  # Allow for floating point precision
-                excess = projects_total - funded_total
-                if family_id not in families_needing_rechar:
-                    families_needing_rechar[family_id] = {}
-                families_needing_rechar[family_id][year] = excess
-                logging.debug(f"Family {family_id} in {year}: Projects donations ${projects_total:,.2f} exceed funded projects ${funded_total:,.2f} by ${excess:,.2f}")
+            if abs(donations_total - assignments_total) <= 0.01:
+                # Totals match - this is good
+                continue
+            elif donations_total > assignments_total:
+                # Projects donations exceed project assignments - needs inverse recharacterization
+                excess = donations_total - assignments_total
+                logging.warning(f"Family {family_id} in {year}: Projects donations ${donations_total:,.2f} exceed Project Assignments ${assignments_total:,.2f} by ${excess:,.2f} - inverse recharacterization needed")
+            else:
+                # Project assignments exceed Projects donations - this is an error
+                shortfall = assignments_total - donations_total
+                logging.error(f"Family {family_id} in {year}: Project Assignments ${assignments_total:,.2f} exceed Projects donations ${donations_total:,.2f} by ${shortfall:,.2f}")
     
-    # Step 4: Recharacterize excess back to General Donation
-    # Process donations in date order (oldest first) for each family/year with excess
-    new_rows = []
-    
-    for family_id, years in families_needing_rechar.items():
-        for year, excess_amount in years.items():
-            # Get all Projects donations for this family/year, sorted by date (oldest first)
-            family_year_donations = []
-            for idx, row in df.iterrows():
-                if (row['Simple COA'] == 'Projects' and 
-                    row['Family ID'] == family_id and 
-                    row['Year'] == year):
-                    family_year_donations.append((idx, row))
-            
-            # Sort by date (oldest first)
-            family_year_donations.sort(key=lambda x: x[1]['Date'])
-            
-            # Recharacterize donations until excess is eliminated
-            remaining_excess = excess_amount
-            
-            for idx, row in family_year_donations:
-                if remaining_excess <= 0.01:  # No more excess to recharacterize
-                    break
-                
-                donation_amount = row['Amount']
-                date_str = row['Date'].strftime('%m/%d/%Y')
-                existing_comment = row['Comments']
-                
-                if donation_amount <= remaining_excess + 0.01:
-                    # Fully recharacterize this donation to General Donation
-                    df.at[idx, 'Simple COA'] = 'General Donation'
-                    
-                    # Add comment
-                    comment = f"${donation_amount:,.2f} recharacterized from Projects to General Donation"
-                    if pd.isna(existing_comment) or existing_comment == '':
-                        df.at[idx, 'Comments'] = comment
-                    else:
-                        df.at[idx, 'Comments'] = f"{existing_comment}; {comment}"
-                    
-                    remaining_excess -= donation_amount
-                    logging.debug(f"Recharacterized full amount ${donation_amount:,.2f} for {row['First']} {row['Last']} on {date_str} from Projects to General Donation")
-                else:
-                    # Split donation: part stays Projects, excess goes to General Donation
-                    projects_amount = donation_amount - remaining_excess
-                    gd_amount = remaining_excess
-                    
-                    # Reduce the Projects amount
-                    df.at[idx, 'Amount'] = projects_amount
-                    
-                    # Add comment to the Projects portion
-                    projects_comment = f"${gd_amount:,.2f} of ${donation_amount:,.2f} recharacterized from Projects to General Donation"
-                    if pd.isna(existing_comment) or existing_comment == '':
-                        df.at[idx, 'Comments'] = projects_comment
-                    else:
-                        df.at[idx, 'Comments'] = f"{existing_comment}; {projects_comment}"
-                    
-                    # Create new row for the recharacterized portion
-                    new_row = row.copy()
-                    new_row['Amount'] = gd_amount
-                    new_row['Simple COA'] = 'General Donation'
-                    
-                    # Add comment to the recharacterized portion
-                    gd_comment = f"${projects_amount:,.2f} of ${donation_amount:,.2f} left as Projects, and ${gd_amount:,.2f} recharacterized from Projects to General Donation separately"
-                    new_row['Comments'] = gd_comment
-                    new_rows.append((idx, new_row))
-                    
-                    logging.debug(f"Split donation for {row['First']} {row['Last']} on {date_str}: ${projects_amount:,.2f} remains in Projects, ${gd_amount:,.2f} recharacterized from Projects to General Donation")
-                    
-                    remaining_excess = 0  # All excess has been recharacterized
-    
-    # Insert new rows right after their corresponding original rows
-    for orig_idx, new_row in sorted(new_rows, key=lambda x: x[0], reverse=True):
-        pos = df.index.get_loc(orig_idx) + 1
-        df = pd.concat([df.iloc[:pos], pd.DataFrame([new_row]), df.iloc[pos:]]).reset_index(drop=True)
-    
-    return df
+    return df_donations
 
 @app.command()
 def process(
@@ -524,9 +449,6 @@ def process(
     # Parse project assignments and track recharacterizations
     project_assignments_path = os.path.join(input_dir, 'project_assignments.xlsx')
     recharacterizations = parse_project_assignments(project_assignments_path)
-    
-    # Parse project matches for inverse recharacterizations
-    match_funding, match_family_ids = parse_project_matches(project_assignments_path)
 
     # Pull info from vault file to support email notifications and enable CCB access
     secrets_files = glob.glob(os.path.join(config.prog_dir, '.secrets_*'))
@@ -841,16 +763,10 @@ def process(
     else:
         logging.debug(f"Total amounts validated: Original = ${original_total:,.2f}, Recharacterized = ${recharacterized_total:,.2f}")
     
-    # Apply inverse recharacterizations (for years 2018+)
-    # This handles cases where Projects donations exceed funded projects
-    df_ilw_recharacterized = apply_inverse_recharacterizations(df_ilw_recharacterized, match_funding, match_family_ids)
-    
-    # Validate: Total amounts should still be equal after inverse recharacterizations
-    inverse_recharacterized_total = df_ilw_recharacterized['Amount'].sum()
-    if abs(original_total - inverse_recharacterized_total) > 0.01:
-        logging.error(f"Total amounts do not match after inverse recharacterization: Original Donations = ${original_total:,.2f}, Recharacterized Donations = ${inverse_recharacterized_total:,.2f}, Difference = ${abs(original_total - inverse_recharacterized_total):,.2f}")
-    else:
-        logging.debug(f"Total amounts validated after inverse recharacterization: Original = ${original_total:,.2f}, Recharacterized = ${inverse_recharacterized_total:,.2f}")
+    # Check for inverse recharacterization cases (for years 2018+)
+    # This validates that Projects donations match Project Assignments per family/year
+    # Does not modify data - only logs warnings/errors
+    df_ilw_recharacterized = check_inverse_recharacterizations(df_ilw_recharacterized, df_ilw_individuals, project_assignments_path)
     
     # Drop Year column from both Donations tabs
     df_ilw_donations = df_ilw_donations.drop(columns=['Year'], axis=1)
