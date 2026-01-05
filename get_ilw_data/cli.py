@@ -643,7 +643,20 @@ def process(
     duplicates = name_groups[name_groups.apply(len) > 1]
     for (first, last), ind_ids in duplicates.items():
         ind_ids_str = ', '.join(str(id) for id in ind_ids)
-        logging.warning(f"Duplicate name found: '{first} {last}' - Individual IDs: {ind_ids_str}")
+        
+        # Categorize by Individual ID ranges
+        ccb_ids = [id for id in ind_ids if id < 100000]
+        manual_ids = [id for id in ind_ids if id >= 100000]
+        
+        if len(manual_ids) == 0:
+            # All IDs are from CCB (< 100000)
+            logging.warning(f"Duplicate name found: '{first} {last}' - Individual IDs: {ind_ids_str} - May be duplicate individuals in CCB")
+        elif len(ccb_ids) == 0:
+            # All IDs are manual additions (>= 100000)
+            logging.error(f"Duplicate name found: '{first} {last}' - Individual IDs: {ind_ids_str} - Two individuals added manually in IndividualConcat tab of Input.xlsx are likely duplicates of each other")
+        else:
+            # Mix of CCB and manual IDs
+            logging.error(f"Duplicate name found: '{first} {last}' - Individual IDs: {ind_ids_str} - Individual manually added in IndividualConcat tab of Input.xlsx has likely been replaced by an individual added to CCB")
 
     if before_after_csvs:
         df_ilw_individuals.to_csv(os.path.join(config.prog_dir, 'before_after_csvs', 'individuals_after.csv'),
