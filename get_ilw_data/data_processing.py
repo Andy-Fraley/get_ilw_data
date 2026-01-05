@@ -181,7 +181,12 @@ def get_pretty_emails_from_fam(fam_id: int, mapping_dicts: MappingDicts, ind_df:
     group_name = ''
     group_email = ''
     if fam_id not in mapping_dicts.fam2inds:
-        # NonGivingFamilies by definition do not exist in CCB, so just return empty values
+        # NonGivingFamilies should have Family IDs >= 100000 (outside CCB space)
+        # and must be defined in IndividualConcat tab
+        if fam_id < 100000:
+            logging.error(f'Family ID {fam_id} specified in NonGivingFamilies tab must be >= 100000 (outside of CCB Individual ID space)')
+        else:
+            logging.error(f'Family ID {fam_id} specified in NonGivingFamilies tab must also be specified in the IndividualConcat tab or removed from the NonGivingFamilies tab')
         return ('', '', None, None)
     inds_in_family = mapping_dicts.fam2inds[fam_id]
     if only_include is not None:
