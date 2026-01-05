@@ -173,9 +173,23 @@ This is a Python application for processing "Ingomar Living Waters" (ILW) donati
    - Validates total amounts match between Original and Recharacterized Donations tabs
    - Logs errors for unmatched recharacterization entries
    - Supported COA abbreviations: P (Projects), WF (Water Filters), GD (General Donation), S&T (Sponsorships & Tickets)
-6. **Family Grouping**: Generate family contact information and email formatting
-7. **Donation Analysis**: Calculate follow-up requirements and yearly summaries
-8. **Excel Generation**: Create formatted multi-sheet workbook with formulas and comments
+6. **Inverse Projects Recharacterization**: Apply inverse recharacterizations for years 2018+
+   - Parses "Match" column from `project_assignments.xlsx` to sum funded project amounts
+   - For each family/year (2018+), compares total Projects donations to total funded projects
+   - If Projects donations exceed funded projects, recharacterizes excess back to General Donation
+   - **Matched donation with partial funding**: If donation has project match but funded amount < donation amount
+     - Splits donation: funded amount stays as Projects, excess goes to General Donation
+     - Projects portion comment: `$X of $Y inverse recharacterized from Projects to General Donation`
+     - General Donation portion comment: `$Z of $Y left as Projects, and $X inverse recharacterized from Projects to General Donation separately`
+   - **Unmatched Projects donation**: If donation has no matching project funding
+     - Entire donation inverse recharacterized to General Donation
+     - Comment: `$X inverse recharacterized from Projects to General Donation`
+   - DEBUG logging includes donation date for all inverse recharacterizations
+   - Validates that funded amounts don't exceed donation amounts (logs ERROR if violated)
+   - Validates total amounts remain consistent after inverse recharacterizations
+7. **Family Grouping**: Generate family contact information and email formatting
+8. **Donation Analysis**: Calculate follow-up requirements and yearly summaries
+9. **Excel Generation**: Create formatted multi-sheet workbook with formulas and comments
 
 ### Output Features
 - Auto-filtering on all sheets
