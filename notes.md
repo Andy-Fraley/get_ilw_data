@@ -163,7 +163,12 @@ This is a Python application for processing "Ingomar Living Waters" (ILW) donati
    - Ignores `*AUTO MATCH*` entries and donations already categorized as Projects (P)
    - For non-Projects donations (GD, WF, S&T) that need recharacterization:
      - **Full recharacterization**: If recharacterization amount equals donation amount, changes COA to "Projects"
-     - **Partial recharacterization**: If recharacterization amount is less than donation amount, splits into two rows (one for remaining original COA, one for Projects portion)
+       - Adds comment: `$X recharacterized from <Original COA> to Projects`
+     - **Partial recharacterization**: If recharacterization amount is less than donation amount, splits into two rows
+       - Remaining portion comment: `$X of $Y left as <Original COA>, and $Z recharacterized from <Original COA> to Projects separately`
+       - Recharacterized portion comment: `$Z of $Y recharacterized from <Original COA> to Projects`
+   - Comments are appended to existing Comments field with "; " separator if field is not empty
+   - DEBUG logging includes donation date and original COA for all recharacterizations
    - Validates that recharacterization amounts don't exceed donation amounts
    - Validates total amounts match between Original and Recharacterized Donations tabs
    - Logs errors for unmatched recharacterization entries

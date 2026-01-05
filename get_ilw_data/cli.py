@@ -171,6 +171,7 @@ def apply_recharacterizations(df_donations, recharacterizations):
     3. If found:
        - If recharacterization amount equals donation amount: change COA to Projects
        - If recharacterization amount < donation amount: split into two rows
+       - Add comments to the Comments field describing the recharacterization
     
     Args:
         df_donations: DataFrame of donations to recharacterize
@@ -181,6 +182,10 @@ def apply_recharacterizations(df_donations, recharacterizations):
     """
     # Create a copy to avoid modifying the original
     df = df_donations.copy()
+    
+    # Ensure Comments column exists
+    if 'Comments' not in df.columns:
+        df['Comments'] = ''
     
     # Track which recharacterization entries are used
     used_entries = set()
@@ -195,6 +200,8 @@ def apply_recharacterizations(df_donations, recharacterizations):
         if match_string and match_string in recharacterizations:
             rechar_amount = recharacterizations[match_string]
             donation_amount = row['Amount']
+            original_coa = row['Simple COA']
+            date_str = row['Date'].strftime('%m/%d/%Y')
             
             # Mark this entry as used
             used_entries.add(match_string)
@@ -202,19 +209,40 @@ def apply_recharacterizations(df_donations, recharacterizations):
             if abs(rechar_amount - donation_amount) < 0.01:  # Equal (accounting for float precision)
                 # Simple case: change COA to Projects
                 df.at[idx, 'Simple COA'] = 'Projects'
-                logging.debug(f"Recharacterized full amount ${donation_amount:,.2f} for {row['First']} {row['Last']} to Projects")
+                
+                # Add comment to the recharacterized row
+                comment = f"${donation_amount:,.2f} recharacterized from {original_coa} to Projects"
+                existing_comment = row['Comments']
+                if pd.isna(existing_comment) or existing_comment == '':
+                    df.at[idx, 'Comments'] = comment
+                else:
+                    df.at[idx, 'Comments'] = f"{existing_comment}; {comment}"
+                
+                logging.debug(f"Recharacterized full amount ${donation_amount:,.2f} for {row['First']} {row['Last']} on {date_str} from {original_coa} to Projects")
             elif rechar_amount < donation_amount:
                 # Split case: reduce original amount and create new Projects row
                 remaining_amount = donation_amount - rechar_amount
                 df.at[idx, 'Amount'] = remaining_amount
                 
+                # Add comment to the remaining portion (the part that stays in original COA)
+                remaining_comment = f"${remaining_amount:,.2f} of ${donation_amount:,.2f} left as {original_coa}, and ${rechar_amount:,.2f} recharacterized from {original_coa} to Projects separately"
+                existing_comment = row['Comments']
+                if pd.isna(existing_comment) or existing_comment == '':
+                    df.at[idx, 'Comments'] = remaining_comment
+                else:
+                    df.at[idx, 'Comments'] = f"{existing_comment}; {remaining_comment}"
+                
                 # Create new row for the recharacterized portion
                 new_row = row.copy()
                 new_row['Amount'] = rechar_amount
                 new_row['Simple COA'] = 'Projects'
+                
+                # Add comment to the recharacterized portion (the part that goes to Projects)
+                rechar_comment = f"${rechar_amount:,.2f} of ${donation_amount:,.2f} recharacterized from {original_coa} to Projects"
+                new_row['Comments'] = rechar_comment
                 new_rows.append((idx, new_row))
                 
-                logging.debug(f"Split donation for {row['First']} {row['Last']}: ${remaining_amount:,.2f} remains in {row['Simple COA']}, ${rechar_amount:,.2f} to Projects")
+                logging.debug(f"Split donation for {row['First']} {row['Last']} on {date_str}: ${remaining_amount:,.2f} remains in {original_coa}, ${rechar_amount:,.2f} to Projects")
             else:
                 # This shouldn't happen due to validation, but log if it does
                 logging.error(f"Recharacterization amount ${rechar_amount:,.2f} exceeds donation amount ${donation_amount:,.2f} for match string: {match_string}")
