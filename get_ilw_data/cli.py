@@ -320,8 +320,10 @@ def apply_inverse_recharacterizations(df_donations, match_funding, match_family_
     """
     Apply inverse recharacterizations to Projects donations.
     
-    For years 2018+, if a family's total Projects donations exceed their funded projects,
-    recharacterize the excess back to General Donation.
+    For years 2018+, ensures that each family's total Projects donations match their
+    total funded projects. Any excess Projects donations are recharacterized back to
+    General Donation, regardless of whether they were originally Projects or recharacterized
+    TO Projects.
     
     Args:
         df_donations: DataFrame of donations (must have Year column)
@@ -338,7 +340,7 @@ def apply_inverse_recharacterizations(df_donations, match_funding, match_family_
     if 'Comments' not in df.columns:
         df['Comments'] = ''
     
-    # Calculate total funded projects per family per year (2018+)
+    # Step 1: Calculate total funded projects per family per year (2018+)
     family_year_funding = {}
     for match_string, funded_amount in match_funding.items():
         family_id = match_family_ids.get(match_string)
@@ -366,7 +368,7 @@ def apply_inverse_recharacterizations(df_donations, match_funding, match_family_
         
         family_year_funding[family_id][year] += funded_amount
     
-    # Calculate total Projects donations per family per year (2018+)
+    # Step 2: Calculate total Projects donations per family per year (2018+)
     family_year_projects = {}
     for idx, row in df.iterrows():
         if row['Simple COA'] != 'Projects':
@@ -385,115 +387,93 @@ def apply_inverse_recharacterizations(df_donations, match_funding, match_family_
         
         family_year_projects[family_id][year] += row['Amount']
     
-    # Identify families/years that need inverse recharacterization
-    families_needing_inverse = {}
+    # Step 3: Identify families/years with excess Projects donations
+    families_needing_rechar = {}
     for family_id, years in family_year_projects.items():
         for year, projects_total in years.items():
             funded_total = family_year_funding.get(family_id, {}).get(year, 0)
             
             if projects_total > funded_total + 0.01:  # Allow for floating point precision
                 excess = projects_total - funded_total
-                if family_id not in families_needing_inverse:
-                    families_needing_inverse[family_id] = {}
-                families_needing_inverse[family_id][year] = {
-                    'excess': excess,
-                    'funded': funded_total,
-                    'donated': projects_total
-                }
+                if family_id not in families_needing_rechar:
+                    families_needing_rechar[family_id] = {}
+                families_needing_rechar[family_id][year] = excess
                 logging.debug(f"Family {family_id} in {year}: Projects donations ${projects_total:,.2f} exceed funded projects ${funded_total:,.2f} by ${excess:,.2f}")
     
-    # Now process inverse recharacterizations
-    # First, handle donations matched to specific projects
+    # Step 4: Recharacterize excess back to General Donation
+    # Process donations in date order (oldest first) for each family/year with excess
     new_rows = []
     
-    for idx, row in df.iterrows():
-        if row['Simple COA'] != 'Projects':
-            continue
-        
-        year = row['Year']
-        if year < 2018:
-            continue
-        
-        match_string = create_match_string(row)
-        if not match_string:
-            continue
-        
-        family_id = row['Family ID']
-        
-        # Check if this donation has matching project funding
-        if match_string in match_funding:
-            funded_amount = match_funding[match_string]
-            donation_amount = row['Amount']
+    for family_id, years in families_needing_rechar.items():
+        for year, excess_amount in years.items():
+            # Get all Projects donations for this family/year, sorted by date (oldest first)
+            family_year_donations = []
+            for idx, row in df.iterrows():
+                if (row['Simple COA'] == 'Projects' and 
+                    row['Family ID'] == family_id and 
+                    row['Year'] == year):
+                    family_year_donations.append((idx, row))
             
-            # Validate: funded amount should not exceed donation amount
-            if funded_amount > donation_amount + 0.01:
-                logging.error(f"Project funding ${funded_amount:,.2f} exceeds donation amount ${donation_amount:,.2f} for match string: {match_string}")
-                continue
+            # Sort by date (oldest first)
+            family_year_donations.sort(key=lambda x: x[1]['Date'])
             
-            # If funded amount is less than donation amount, split it
-            if funded_amount < donation_amount - 0.01:
-                inverse_amount = donation_amount - funded_amount
+            # Recharacterize donations until excess is eliminated
+            remaining_excess = excess_amount
+            
+            for idx, row in family_year_donations:
+                if remaining_excess <= 0.01:  # No more excess to recharacterize
+                    break
+                
+                donation_amount = row['Amount']
                 date_str = row['Date'].strftime('%m/%d/%Y')
-                
-                # Reduce the Projects amount to match funded amount
-                df.at[idx, 'Amount'] = funded_amount
-                
-                # Add comment to the Projects portion
-                projects_comment = f"${inverse_amount:,.2f} of ${donation_amount:,.2f} inverse recharacterized from Projects to General Donation"
                 existing_comment = row['Comments']
-                if pd.isna(existing_comment) or existing_comment == '':
-                    df.at[idx, 'Comments'] = projects_comment
+                
+                if donation_amount <= remaining_excess + 0.01:
+                    # Fully recharacterize this donation to General Donation
+                    df.at[idx, 'Simple COA'] = 'General Donation'
+                    
+                    # Add comment
+                    comment = f"${donation_amount:,.2f} recharacterized from Projects to General Donation"
+                    if pd.isna(existing_comment) or existing_comment == '':
+                        df.at[idx, 'Comments'] = comment
+                    else:
+                        df.at[idx, 'Comments'] = f"{existing_comment}; {comment}"
+                    
+                    remaining_excess -= donation_amount
+                    logging.debug(f"Recharacterized full amount ${donation_amount:,.2f} for {row['First']} {row['Last']} on {date_str} from Projects to General Donation")
                 else:
-                    df.at[idx, 'Comments'] = f"{existing_comment}; {projects_comment}"
-                
-                # Create new row for the inverse recharacterized portion
-                new_row = row.copy()
-                new_row['Amount'] = inverse_amount
-                new_row['Simple COA'] = 'General Donation'
-                
-                # Add comment to the inverse recharacterized portion
-                inverse_comment = f"${funded_amount:,.2f} of ${donation_amount:,.2f} left as Projects, and ${inverse_amount:,.2f} inverse recharacterized from Projects to General Donation separately"
-                new_row['Comments'] = inverse_comment
-                new_rows.append((idx, new_row))
-                
-                logging.debug(f"Inverse split donation for {row['First']} {row['Last']} on {date_str}: ${funded_amount:,.2f} remains in Projects, ${inverse_amount:,.2f} inverse recharacterized to General Donation")
+                    # Split donation: part stays Projects, excess goes to General Donation
+                    projects_amount = donation_amount - remaining_excess
+                    gd_amount = remaining_excess
+                    
+                    # Reduce the Projects amount
+                    df.at[idx, 'Amount'] = projects_amount
+                    
+                    # Add comment to the Projects portion
+                    projects_comment = f"${gd_amount:,.2f} of ${donation_amount:,.2f} recharacterized from Projects to General Donation"
+                    if pd.isna(existing_comment) or existing_comment == '':
+                        df.at[idx, 'Comments'] = projects_comment
+                    else:
+                        df.at[idx, 'Comments'] = f"{existing_comment}; {projects_comment}"
+                    
+                    # Create new row for the recharacterized portion
+                    new_row = row.copy()
+                    new_row['Amount'] = gd_amount
+                    new_row['Simple COA'] = 'General Donation'
+                    
+                    # Add comment to the recharacterized portion
+                    gd_comment = f"${projects_amount:,.2f} of ${donation_amount:,.2f} left as Projects, and ${gd_amount:,.2f} recharacterized from Projects to General Donation separately"
+                    new_row['Comments'] = gd_comment
+                    new_rows.append((idx, new_row))
+                    
+                    logging.debug(f"Split donation for {row['First']} {row['Last']} on {date_str}: ${projects_amount:,.2f} remains in Projects, ${gd_amount:,.2f} recharacterized from Projects to General Donation")
+                    
+                    remaining_excess = 0  # All excess has been recharacterized
     
     # Insert new rows right after their corresponding original rows
     for orig_idx, new_row in sorted(new_rows, key=lambda x: x[0], reverse=True):
         pos = df.index.get_loc(orig_idx) + 1
         df = pd.concat([df.iloc[:pos], pd.DataFrame([new_row]), df.iloc[pos:]]).reset_index(drop=True)
-    
-    # Now handle unmatched Projects donations (entire donation inverse recharacterized)
-    # We need to iterate again after the splits have been added
-    for idx, row in df.iterrows():
-        if row['Simple COA'] != 'Projects':
-            continue
-        
-        year = row['Year']
-        if year < 2018:
-            continue
-        
-        match_string = create_match_string(row)
-        if not match_string:
-            continue
-        
-        # If this donation has no matching project funding, inverse recharacterize it entirely
-        if match_string not in match_funding:
-            donation_amount = row['Amount']
-            date_str = row['Date'].strftime('%m/%d/%Y')
-            
-            # Change COA to General Donation
-            df.at[idx, 'Simple COA'] = 'General Donation'
-            
-            # Add comment
-            comment = f"${donation_amount:,.2f} inverse recharacterized from Projects to General Donation"
-            existing_comment = row['Comments']
-            if pd.isna(existing_comment) or existing_comment == '':
-                df.at[idx, 'Comments'] = comment
-            else:
-                df.at[idx, 'Comments'] = f"{existing_comment}; {comment}"
-            
-            logging.debug(f"Inverse recharacterized full amount ${donation_amount:,.2f} for {row['First']} {row['Last']} on {date_str} from Projects to General Donation (unmatched)")
     
     return df
 

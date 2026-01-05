@@ -174,19 +174,20 @@ This is a Python application for processing "Ingomar Living Waters" (ILW) donati
    - Logs errors for unmatched recharacterization entries
    - Supported COA abbreviations: P (Projects), WF (Water Filters), GD (General Donation), S&T (Sponsorships & Tickets)
 6. **Inverse Projects Recharacterization**: Apply inverse recharacterizations for years 2018+
-   - Parses "Match" column from `project_assignments.xlsx` to sum funded project amounts
+   - Parses "Match" column from `project_assignments.xlsx` to sum funded project amounts by family/year
    - For each family/year (2018+), compares total Projects donations to total funded projects
    - If Projects donations exceed funded projects, recharacterizes excess back to General Donation
-   - **Matched donation with partial funding**: If donation has project match but funded amount < donation amount
-     - Splits donation: funded amount stays as Projects, excess goes to General Donation
-     - Projects portion comment: `$X of $Y inverse recharacterized from Projects to General Donation`
-     - General Donation portion comment: `$Z of $Y left as Projects, and $X inverse recharacterized from Projects to General Donation separately`
-   - **Unmatched Projects donation**: If donation has no matching project funding
-     - Entire donation inverse recharacterized to General Donation
-     - Comment: `$X inverse recharacterized from Projects to General Donation`
-   - DEBUG logging includes donation date for all inverse recharacterizations
-   - Validates that funded amounts don't exceed donation amounts (logs ERROR if violated)
-   - Validates total amounts remain consistent after inverse recharacterizations
+   - Processes ALL Projects donations (regardless of whether originally Projects or recharacterized TO Projects)
+   - Recharacterizes excess in date order (oldest first) until excess is eliminated:
+     - **Full recharacterization**: If donation amount ≤ remaining excess
+       - Entire donation recharacterized to General Donation
+       - Comment: `$X recharacterized from Projects to General Donation`
+     - **Partial recharacterization**: If donation amount > remaining excess
+       - Splits donation: excess goes to General Donation, remainder stays as Projects
+       - Projects portion comment: `$X of $Y recharacterized from Projects to General Donation`
+       - General Donation portion comment: `$Z of $Y left as Projects, and $X recharacterized from Projects to General Donation separately`
+   - DEBUG logging includes donation date for all recharacterizations
+   - Validates total amounts remain consistent after recharacterizations
 7. **Family Grouping**: Generate family contact information and email formatting
 8. **Donation Analysis**: Calculate follow-up requirements and yearly summaries
 9. **Excel Generation**: Create formatted multi-sheet workbook with formulas and comments
