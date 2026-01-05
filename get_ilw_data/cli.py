@@ -320,6 +320,8 @@ def check_inverse_recharacterizations(df_donations, df_individuals, project_assi
     for idx, row in df_project_assignments.iterrows():
         amount_raw = row.get('Amount', 0)
         match_value = row.get('Match', '')
+        first_name = row.get('First', '')
+        last_name = row.get('Last', '')
         
         # Parse Amount
         if pd.isna(amount_raw):
@@ -335,21 +337,28 @@ def check_inverse_recharacterizations(df_donations, df_individuals, project_assi
         
         match_value = str(match_value).strip()
         
-        # Parse Match string: Last-First-YYYYMMDD-$Amount-COA
-        # Extract from the end backwards
+        # Get First and Last names from columns
+        if pd.isna(first_name):
+            first_name = ''
+        else:
+            first_name = str(first_name).strip()
+        
+        if pd.isna(last_name):
+            last_name = ''
+        else:
+            last_name = str(last_name).strip()
+        
+        if not first_name or not last_name:
+            logging.warning(f"Missing First or Last name in Project Assignments for Match: {match_value}")
+            continue
+        
+        # Extract year from Match string to determine which year this assignment belongs to
         suffix_pattern = re.compile(r'^(.*?)-(\d{8})-\$?([\d,]+\.[\d]{2})-([A-Z]+)$')
         match = suffix_pattern.match(match_value)
         if not match:
             continue
         
         name_part, date_str, dollar_amount_str, coa_abbrev = match.groups()
-        
-        # Parse Last-First from name_part
-        name_parts = name_part.rsplit('-', 1)
-        if len(name_parts) != 2:
-            continue
-        
-        last_name, first_name = name_parts
         
         # Extract year
         if len(date_str) != 8:
@@ -359,7 +368,7 @@ def check_inverse_recharacterizations(df_donations, df_individuals, project_assi
         if year < 2018:
             continue
         
-        # Map name to Family ID
+        # Map name to Family ID using First and Last columns
         key = f"{first_name.lower()}-{last_name.lower()}"
         family_id = name_to_family.get(key)
         
