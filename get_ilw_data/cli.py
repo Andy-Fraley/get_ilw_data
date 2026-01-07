@@ -448,10 +448,11 @@ def check_inverse_recharacterizations(df_recharacterized_donations, df_original_
 
 def apply_inverse_recharacterizations(df_donations, inverse_rechar_cases, df_families):
     """
-    Apply inverse recharacterizations for $0 Project Assignments cases.
+    Apply inverse recharacterizations and add comments to donations.
     
-    For families with Projects donations but $0 in Project Assignments,
-    recharacterize from Projects to General Donation and add comments.
+    For families with Projects donations exceeding Project Assignments:
+    - If $0 in Project Assignments: recharacterize from Projects to General Donation
+    - If non-zero excess: add comment describing needed inverse recharacterization
     
     Args:
         df_donations: DataFrame of donations to modify
@@ -459,7 +460,7 @@ def apply_inverse_recharacterizations(df_donations, inverse_rechar_cases, df_fam
         df_families: DataFrame with family information (for Name(s) column)
     
     Returns:
-        Modified DataFrame with inverse recharacterizations applied
+        Modified DataFrame with inverse recharacterizations applied and comments added
     """
     # Create a copy to avoid modifying the original
     df = df_donations.copy()
@@ -478,30 +479,42 @@ def apply_inverse_recharacterizations(df_donations, inverse_rechar_cases, df_fam
     
     # Process each case that needs inverse recharacterization
     for (year, family_id), (donations_total, assignments_total) in inverse_rechar_cases.items():
-        # Only handle $0 Project Assignments cases for now
-        if assignments_total != 0:
-            continue
-        
         # Get family name
         family_name = family_names.get(family_id, f'Family {family_id}')
         
         # Find all Projects donations for this family in this year
         mask = (df['Simple COA'] == 'Projects') & (df['Year'] == year) & (df['Family ID'] == family_id)
         
-        for idx in df[mask].index:
-            # Recharacterize from Projects to General Donation
-            df.at[idx, 'Simple COA'] = 'General Donation'
+        if assignments_total == 0:
+            # $0 in Project Assignments: recharacterize from Projects to General Donation
+            for idx in df[mask].index:
+                # Recharacterize from Projects to General Donation
+                df.at[idx, 'Simple COA'] = 'General Donation'
+                
+                # Add comment
+                comment = f"Recharacterized from Projects to General Donation - no associated projects in Project Assignments for year {year} for {family_name}"
+                existing_comment = df.at[idx, 'Comments']
+                
+                if pd.isna(existing_comment) or existing_comment == '':
+                    df.at[idx, 'Comments'] = comment
+                else:
+                    df.at[idx, 'Comments'] = f"{existing_comment}; {comment}"
+                
+                logging.debug(f"Recharacterized ${df.at[idx, 'Amount']:,.2f} from Projects to General Donation for {family_name} (Family {family_id}) in {year}")
+        else:
+            # Non-zero excess: add comment describing needed inverse recharacterization
+            excess = donations_total - assignments_total
+            comment = f"Inverse recharacterization needed: Projects donations ${donations_total:,.2f} exceed Project Assignments ${assignments_total:,.2f} by ${excess:,.2f} for {family_name} in {year}"
             
-            # Add comment
-            comment = f"Recharacterized from Projects to General Donation - no associated projects in Project Assignments for year {year} for {family_name}"
-            existing_comment = df.at[idx, 'Comments']
-            
-            if pd.isna(existing_comment) or existing_comment == '':
-                df.at[idx, 'Comments'] = comment
-            else:
-                df.at[idx, 'Comments'] = f"{existing_comment}; {comment}"
-            
-            logging.debug(f"Recharacterized ${df.at[idx, 'Amount']:,.2f} from Projects to General Donation for {family_name} (Family {family_id}) in {year}")
+            for idx in df[mask].index:
+                existing_comment = df.at[idx, 'Comments']
+                
+                if pd.isna(existing_comment) or existing_comment == '':
+                    df.at[idx, 'Comments'] = comment
+                else:
+                    df.at[idx, 'Comments'] = f"{existing_comment}; {comment}"
+                
+                logging.debug(f"Added inverse recharacterization comment to ${df.at[idx, 'Amount']:,.2f} donation for {family_name} (Family {family_id}) in {year}")
     
     return df
 
@@ -918,8 +931,9 @@ def process(
     # Uses Original Donations for Match string lookup to get correct Family ID (with Override Fam ID applied)
     inverse_rechar_cases = check_inverse_recharacterizations(df_ilw_recharacterized, df_ilw_donations, df_ilw_individuals, df_ilw_families, project_assignments_path)
     
-    # Apply inverse recharacterizations for $0 Project Assignments cases
-    # This modifies the DataFrame to recharacterize Projects to General Donation
+    # Apply inverse recharacterizations and add comments
+    # - $0 Project Assignments: recharacterize Projects to General Donation
+    # - Non-zero excess: add comment describing needed inverse recharacterization
     df_ilw_recharacterized = apply_inverse_recharacterizations(df_ilw_recharacterized, inverse_rechar_cases, df_ilw_families)
     
     # Validate total amounts after inverse recharacterizations
