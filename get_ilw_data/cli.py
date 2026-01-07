@@ -257,7 +257,7 @@ def apply_recharacterizations(df_donations, recharacterizations):
     
     return df, used_entries
 
-def check_inverse_recharacterizations(df_donations, df_individuals, df_families, project_assignments_path):
+def check_inverse_recharacterizations(df_recharacterized_donations, df_original_donations, df_individuals, df_families, project_assignments_path):
     """
     Check for cases where Projects donations don't match Project Assignments.
     
@@ -265,11 +265,12 @@ def check_inverse_recharacterizations(df_donations, df_individuals, df_families,
     total Project Assignments amounts. Logs WARNING/DEBUG if donations exceed assignments,
     and ERROR if assignments exceed donations.
     
-    Uses Match string from Project Assignments to find the actual donation in Recharacterized
+    Uses Match string from Project Assignments to find the actual donation in Original
     Donations, then uses that donation's Family ID (which has Override Fam ID already applied).
     
     Args:
-        df_donations: DataFrame of donations (must have Year column and Match string capability)
+        df_recharacterized_donations: DataFrame of recharacterized donations (for calculating Projects totals)
+        df_original_donations: DataFrame of original donations (for Match string lookup to get Family ID)
         df_individuals: DataFrame of individuals (not used, kept for compatibility)
         df_families: DataFrame with family information (for Name(s) column)
         project_assignments_path: Path to project_assignments.xlsx file
@@ -278,8 +279,9 @@ def check_inverse_recharacterizations(df_donations, df_individuals, df_families,
         dict: Mapping of (year, family_id) to (donations_total, assignments_total) for cases needing inverse recharacterization
     """
     # Step 1: Calculate total Projects donations per family per year (2018+)
+    # Use Recharacterized Donations to get the correct COA after recharacterizations
     family_total_projects_donations = {}
-    for idx, row in df_donations.iterrows():
+    for idx, row in df_recharacterized_donations.iterrows():
         if row['Simple COA'] != 'Projects':
             continue
         
@@ -304,10 +306,11 @@ def check_inverse_recharacterizations(df_donations, df_individuals, df_families,
         logging.error(f"Failed to read Project Assignments tab: {e}")
         return {}
     
-    # Step 3: Create a mapping of Match strings to donation rows in df_donations
-    # This allows us to find the actual Family ID (with Override Fam ID applied)
+    # Step 3: Create a mapping of Match strings to donation rows in Original Donations
+    # This allows us to find the actual Family ID (with Override Fam ID applied from MatchedTransactions)
+    # Match strings in Project Assignments match the pre-recharacterized donations in Original Donations
     match_to_donation = {}
-    for idx, row in df_donations.iterrows():
+    for idx, row in df_original_donations.iterrows():
         match_string = create_match_string(row)
         if match_string:
             match_to_donation[match_string] = row
@@ -885,7 +888,8 @@ def process(
     
     # Check for inverse recharacterization cases (for years 2018+)
     # This validates that Projects donations match Project Assignments per family/year
-    inverse_rechar_cases = check_inverse_recharacterizations(df_ilw_recharacterized, df_ilw_individuals, df_ilw_families, project_assignments_path)
+    # Uses Original Donations for Match string lookup to get correct Family ID (with Override Fam ID applied)
+    inverse_rechar_cases = check_inverse_recharacterizations(df_ilw_recharacterized, df_ilw_donations, df_ilw_individuals, df_ilw_families, project_assignments_path)
     
     # Apply inverse recharacterizations for $0 Project Assignments cases
     # This modifies the DataFrame to recharacterize Projects to General Donation
