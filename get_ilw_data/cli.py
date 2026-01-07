@@ -265,9 +265,12 @@ def check_inverse_recharacterizations(df_donations, df_individuals, df_families,
     total Project Assignments amounts. Logs WARNING/DEBUG if donations exceed assignments,
     and ERROR if assignments exceed donations.
     
+    Uses Match string from Project Assignments to find the actual donation in Recharacterized
+    Donations, then uses that donation's Family ID (which has Override Fam ID already applied).
+    
     Args:
-        df_donations: DataFrame of donations (must have Year column)
-        df_individuals: DataFrame of individuals (for mapping names to Family IDs)
+        df_donations: DataFrame of donations (must have Year column and Match string capability)
+        df_individuals: DataFrame of individuals (not used, kept for compatibility)
         df_families: DataFrame with family information (for Name(s) column)
         project_assignments_path: Path to project_assignments.xlsx file
     
@@ -293,34 +296,29 @@ def check_inverse_recharacterizations(df_donations, df_individuals, df_families,
         
         family_total_projects_donations[year][family_id] += row['Amount']
     
-    # Step 2: Read Project Assignments and map names to Family IDs
+    # Step 2: Read Project Assignments
     try:
         with pd.ExcelFile(project_assignments_path) as xlsx:
             df_project_assignments = pd.read_excel(xlsx, sheet_name='Project Assignments')
     except Exception as e:
         logging.error(f"Failed to read Project Assignments tab: {e}")
-        return df_donations
+        return {}
     
-    # Create name-to-family mapping from Individuals tab
-    name_to_family = {}
-    for idx, row in df_individuals.iterrows():
-        first = str(row.get('First', '')).strip()
-        last = str(row.get('Last', '')).strip()
-        family_id = row.get('Family ID', '')
-        
-        if first and last and family_id:
-            # Use First-Last as key (case-insensitive)
-            key = f"{first.lower()}-{last.lower()}"
-            name_to_family[key] = family_id
+    # Step 3: Create a mapping of Match strings to donation rows in df_donations
+    # This allows us to find the actual Family ID (with Override Fam ID applied)
+    match_to_donation = {}
+    for idx, row in df_donations.iterrows():
+        match_string = create_match_string(row)
+        if match_string:
+            match_to_donation[match_string] = row
     
-    # Step 3: Calculate total Project Assignments per family per year (2018+)
+    # Step 4: Calculate total Project Assignments per family per year (2018+)
+    # Use Match string to find the donation and get its Family ID
     family_total_project_assignments = {}
     
     for idx, row in df_project_assignments.iterrows():
         amount_raw = row.get('Amount', 0)
         match_value = row.get('Match', '')
-        first_name = row.get('First', '')
-        last_name = row.get('Last', '')
         
         # Parse Amount
         if pd.isna(amount_raw):
@@ -336,25 +334,11 @@ def check_inverse_recharacterizations(df_donations, df_individuals, df_families,
         
         match_value = str(match_value).strip()
         
-        # Get First and Last names from columns
-        if pd.isna(first_name):
-            first_name = ''
-        else:
-            first_name = str(first_name).strip()
-        
-        if pd.isna(last_name):
-            last_name = ''
-        else:
-            last_name = str(last_name).strip()
-        
-        if not first_name or not last_name:
-            logging.warning(f"Missing First or Last name in Project Assignments for Match: {match_value}")
-            continue
-        
-        # Extract year from Match string to determine which year this assignment belongs to
+        # Extract year from Match string
         suffix_pattern = re.compile(r'^(.*?)-(\d{8})-\$?([\d,]+\.[\d]{2})-([A-Z]+)$')
         match = suffix_pattern.match(match_value)
         if not match:
+            logging.warning(f"Invalid Match format in Project Assignments: {match_value}")
             continue
         
         name_part, date_str, dollar_amount_str, coa_abbrev = match.groups()
@@ -367,13 +351,15 @@ def check_inverse_recharacterizations(df_donations, df_individuals, df_families,
         if year < 2018:
             continue
         
-        # Map name to Family ID using First and Last columns
-        key = f"{first_name.lower()}-{last_name.lower()}"
-        family_id = name_to_family.get(key)
+        # Find the donation using the Match string to get the correct Family ID
+        donation_row = match_to_donation.get(match_value)
         
-        if not family_id:
-            logging.warning(f"Could not map '{first_name} {last_name}' from Project Assignments to a Family ID")
+        if donation_row is None:
+            logging.warning(f"Could not find donation for Match string in Project Assignments: {match_value}")
             continue
+        
+        # Use the Family ID from the donation (which has Override Fam ID applied)
+        family_id = donation_row['Family ID']
         
         # Add to totals
         if year not in family_total_project_assignments:
@@ -383,7 +369,7 @@ def check_inverse_recharacterizations(df_donations, df_individuals, df_families,
         
         family_total_project_assignments[year][family_id] += amount
     
-    # Step 4: Create family_id to Name(s) mapping from Families DataFrame
+    # Step 5: Create family_id to Name(s) mapping from Families DataFrame
     family_names = {}
     for idx, row in df_families.iterrows():
         family_id = row.get('Family ID')
@@ -391,7 +377,7 @@ def check_inverse_recharacterizations(df_donations, df_individuals, df_families,
         if family_id:
             family_names[family_id] = name
     
-    # Step 5: Compare totals and log warnings/errors
+    # Step 6: Compare totals and log warnings/errors
     # Also collect cases that need inverse recharacterization
     inverse_rechar_cases = {}  # (year, family_id) -> (donations_total, assignments_total)
     
