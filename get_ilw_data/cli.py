@@ -65,6 +65,7 @@ def parse_project_assignments(project_assignments_path):
     
     for index, row in df_project_assignments.iterrows():
         find_value = row.get('Find', '')
+        match_value = row.get('Match', '')
         amount_raw = row.get('Amount', 0)
         placeholder_value = row.get('Placeholder Value', '')
         full_names = row.get('Full Name(s)', '')
@@ -84,7 +85,18 @@ def parse_project_assignments(project_assignments_path):
         else:
             find_value = str(find_value).strip()
         
-        # Handle blank or #N/A entries
+        # Convert match_value to string and handle NaN/None
+        if pd.isna(match_value):
+            match_value = ''
+        else:
+            match_value = str(match_value).strip()
+        
+        # Skip rows where Find=#N/A and Match contains NOT_RECEIVED in date portion
+        # These are acknowledged as donations not yet received
+        if find_value == '#N/A' and 'NOT_RECEIVED' in match_value:
+            continue
+        
+        # Handle blank or #N/A entries (not yet matched)
         if find_value == '' or find_value == '#N/A':
             logging.warning(f"Funding is not yet matched for ${amount:,.2f} towards {placeholder_value} project by {full_names}")
             continue
@@ -316,11 +328,12 @@ def check_inverse_recharacterizations(df_recharacterized_donations, df_original_
             match_to_donation[match_string] = row
     
     # Step 4: Calculate total Project Assignments per family per year (2018+)
-    # Use Match string to find the donation and get its Family ID
+    # Use Find string to find the donation and get its Family ID
     family_total_project_assignments = {}
     
     for idx, row in df_project_assignments.iterrows():
         amount_raw = row.get('Amount', 0)
+        find_value = row.get('Find', '')
         match_value = row.get('Match', '')
         
         # Parse Amount
@@ -331,17 +344,31 @@ def check_inverse_recharacterizations(df_recharacterized_donations, df_original_
         else:
             amount = float(amount_raw)
         
-        # Skip if no match or invalid match
-        if pd.isna(match_value) or match_value == '' or match_value == '#N/A' or match_value == '*AUTO MATCH*':
+        # Convert find_value to string and handle NaN/None
+        if pd.isna(find_value):
+            find_value = ''
+        else:
+            find_value = str(find_value).strip()
+        
+        # Convert match_value to string and handle NaN/None
+        if pd.isna(match_value):
+            match_value = ''
+        else:
+            match_value = str(match_value).strip()
+        
+        # Skip rows where Find=#N/A and Match contains NOT_RECEIVED in date portion
+        if find_value == '#N/A' and 'NOT_RECEIVED' in match_value:
             continue
         
-        match_value = str(match_value).strip()
+        # Skip if no find value or invalid find value
+        if find_value == '' or find_value == '#N/A' or find_value == '*AUTO MATCH*':
+            continue
         
-        # Extract year from Match string
+        # Extract year from Find string
         suffix_pattern = re.compile(r'^(.*?)-(\d{8})-\$?([\d,]+\.[\d]{2})-([A-Z]+)$')
-        match = suffix_pattern.match(match_value)
+        match = suffix_pattern.match(find_value)
         if not match:
-            logging.warning(f"Invalid Match format in Project Assignments: {match_value}")
+            logging.warning(f"Invalid Find format in Project Assignments: {find_value}")
             continue
         
         name_part, date_str, dollar_amount_str, coa_abbrev = match.groups()
@@ -354,11 +381,11 @@ def check_inverse_recharacterizations(df_recharacterized_donations, df_original_
         if year < 2018:
             continue
         
-        # Find the donation using the Match string to get the correct Family ID
-        donation_row = match_to_donation.get(match_value)
+        # Find the donation using the Find string to get the correct Family ID
+        donation_row = match_to_donation.get(find_value)
         
         if donation_row is None:
-            logging.warning(f"Could not find donation for Match string in Project Assignments: {match_value}")
+            logging.warning(f"Could not find donation for Find string in Project Assignments: {find_value}")
             continue
         
         # Use the Family ID from the donation (which has Override Fam ID applied)
