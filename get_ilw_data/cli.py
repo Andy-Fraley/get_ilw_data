@@ -446,18 +446,19 @@ def check_inverse_recharacterizations(df_recharacterized_donations, df_original_
     
     return inverse_rechar_cases
 
-def apply_inverse_recharacterizations(df_donations, inverse_rechar_cases, df_families, project_assignments_path):
+def apply_inverse_recharacterizations(df_donations, df_original_donations, inverse_rechar_cases, df_families, project_assignments_path):
     """
     Propose inverse recharacterizations and add detailed comments to donations.
     
     For families with Projects donations exceeding Project Assignments:
     - If $0 in Project Assignments: recharacterize from Projects to General Donation (actual change)
     - If non-zero excess: propose specific inverse recharacterizations (comments only, no changes)
-      - Case 1: Donation not in Project Assignments Find column -> propose 100% recharacterization
+      - Case 1: Original donation not in Project Assignments Find column -> propose 100% recharacterization
       - Case 2: Donation amount exceeds Project Assignment amount and overage equals family discrepancy -> propose split
     
     Args:
-        df_donations: DataFrame of donations to modify
+        df_donations: DataFrame of recharacterized donations to modify
+        df_original_donations: DataFrame of original donations (for matching against Project Assignments)
         inverse_rechar_cases: dict mapping (year, family_id) to (donations_total, assignments_total)
         df_families: DataFrame with family information (for Name(s) column)
         project_assignments_path: Path to project_assignments.xlsx file
@@ -525,6 +526,21 @@ def apply_inverse_recharacterizations(df_donations, inverse_rechar_cases, df_fam
         else:
             find_to_amount[find_value] = amount
     
+    # Create a mapping from Recharacterized Donations index to Original Donations row
+    # This allows us to find the original donation for each recharacterized donation
+    # We'll match on Family ID, Date, and original Amount (before any splits)
+    rechar_to_original = {}
+    for rechar_idx, rechar_row in df.iterrows():
+        # Try to find matching original donation by Family ID, Date, and Amount
+        # Note: Amount in Original Donations should match the recharacterized amount for Projects donations
+        # that were originally Projects (not forward-recharacterized)
+        for orig_idx, orig_row in df_original_donations.iterrows():
+            if (rechar_row['Family ID'] == orig_row['Family ID'] and
+                rechar_row['Date'] == orig_row['Date'] and
+                abs(rechar_row['Amount'] - orig_row['Amount']) < 0.01):
+                rechar_to_original[rechar_idx] = orig_row
+                break
+    
     # Process each case that needs inverse recharacterization
     for (year, family_id), (donations_total, assignments_total) in inverse_rechar_cases.items():
         # Get family name
@@ -555,16 +571,25 @@ def apply_inverse_recharacterizations(df_donations, inverse_rechar_cases, df_fam
             # Check each Projects donation for this family/year
             for idx in df[mask].index:
                 donation_row = df.loc[idx]
-                match_string = create_match_string(donation_row)
-                
-                if not match_string:
-                    continue
-                
                 donation_amount = donation_row['Amount']
                 
-                # Case 1: Donation NOT in Project Assignments Find column
-                if match_string not in find_values_set:
-                    comment = f"PROPOSE: Recharacterize 100% (${donation_amount:,.2f}) from Projects to General Donation - not referenced in Project Assignments Find column"
+                # Find the corresponding original donation
+                original_row = rechar_to_original.get(idx)
+                
+                if original_row is None:
+                    # No matching original donation found - skip this one
+                    logging.warning(f"Could not find original donation for recharacterized donation at index {idx}")
+                    continue
+                
+                # Create match string from the ORIGINAL donation (not recharacterized)
+                original_match_string = create_match_string(original_row)
+                
+                if not original_match_string:
+                    continue
+                
+                # Case 1: Original donation NOT in Project Assignments Find column
+                if original_match_string not in find_values_set:
+                    comment = f"PROPOSE: Recharacterize 100% (${donation_amount:,.2f}) from Projects to General Donation - original donation not referenced in Project Assignments Find column"
                     existing_comment = df.at[idx, 'Comments']
                     
                     if pd.isna(existing_comment) or existing_comment == '':
@@ -572,11 +597,11 @@ def apply_inverse_recharacterizations(df_donations, inverse_rechar_cases, df_fam
                     else:
                         df.at[idx, 'Comments'] = f"{existing_comment}; {comment}"
                     
-                    logging.debug(f"Proposed 100% inverse recharacterization for ${donation_amount:,.2f} donation (not in Project Assignments) for {family_name} (Family {family_id}) in {year}")
+                    logging.debug(f"Proposed 100% inverse recharacterization for ${donation_amount:,.2f} donation (original not in Project Assignments) for {family_name} (Family {family_id}) in {year}")
                 
-                # Case 2: Donation IS in Project Assignments but amount exceeds Project Assignment amount
-                elif match_string in find_to_amount:
-                    project_assignment_amount = find_to_amount[match_string]
+                # Case 2: Original donation IS in Project Assignments but amount exceeds Project Assignment amount
+                elif original_match_string in find_to_amount:
+                    project_assignment_amount = find_to_amount[original_match_string]
                     
                     if donation_amount > project_assignment_amount:
                         overage = donation_amount - project_assignment_amount
@@ -1011,7 +1036,7 @@ def process(
     # Apply inverse recharacterizations and add comments
     # - $0 Project Assignments: recharacterize Projects to General Donation
     # - Non-zero excess: propose specific inverse recharacterizations (comments only)
-    df_ilw_recharacterized = apply_inverse_recharacterizations(df_ilw_recharacterized, inverse_rechar_cases, df_ilw_families, project_assignments_path)
+    df_ilw_recharacterized = apply_inverse_recharacterizations(df_ilw_recharacterized, df_ilw_donations, inverse_rechar_cases, df_ilw_families, project_assignments_path)
     
     # Validate total amounts after inverse recharacterizations
     recharacterized_total_after_inverse = df_ilw_recharacterized['Amount'].sum()
