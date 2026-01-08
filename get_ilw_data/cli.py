@@ -683,6 +683,159 @@ def apply_inverse_recharacterizations(df_donations, df_original_donations, inver
     
     return df
 
+def verify_projects_integrity(df_recharacterized_donations, df_original_donations, df_families, project_assignments_path):
+    """
+    Verify integrity between finalized Recharacterized Donations Projects totals and Project Assignments totals.
+    
+    Compares Projects donations in Recharacterized Donations (by Family ID and year) against
+    Project Assignments (by Family ID and year). Logs ERROR for any mismatches.
+    
+    Args:
+        df_recharacterized_donations: DataFrame of finalized recharacterized donations (with Year column)
+        df_original_donations: DataFrame of original donations (for mapping Find to Family ID)
+        df_families: DataFrame with family information (for Name(s) column)
+        project_assignments_path: Path to project_assignments.xlsx file
+    """
+    logging.info("Starting Projects integrity check between Recharacterized Donations and Project Assignments...")
+    
+    # Step 1: Summarize Projects donations in Recharacterized Donations by Family ID and year (2018+)
+    projects_by_family_year = {}
+    for idx, row in df_recharacterized_donations.iterrows():
+        if row['Simple COA'] != 'Projects':
+            continue
+        
+        year = row['Year']
+        if year < 2018:
+            continue
+        
+        family_id = row['Family ID']
+        
+        if year not in projects_by_family_year:
+            projects_by_family_year[year] = {}
+        if family_id not in projects_by_family_year[year]:
+            projects_by_family_year[year][family_id] = 0
+        
+        projects_by_family_year[year][family_id] += row['Amount']
+    
+    # Step 2: Read Project Assignments and summarize by Family ID and year
+    try:
+        with pd.ExcelFile(project_assignments_path) as xlsx:
+            df_project_assignments = pd.read_excel(xlsx, sheet_name='Project Assignments')
+    except Exception as e:
+        logging.error(f"Failed to read Project Assignments tab for integrity check: {e}")
+        return
+    
+    # Create a mapping of Match strings to donation rows in Original Donations
+    # This allows us to find the Family ID from the Find column in Project Assignments
+    match_to_donation = {}
+    for idx, row in df_original_donations.iterrows():
+        match_string = create_match_string(row)
+        if match_string:
+            match_to_donation[match_string] = row
+    
+    # Summarize Project Assignments by Family ID and year (2018+)
+    assignments_by_family_year = {}
+    
+    for idx, row in df_project_assignments.iterrows():
+        amount_raw = row.get('Amount', 0)
+        find_value = row.get('Find', '')
+        match_value = row.get('Match', '')
+        
+        # Parse Amount
+        if pd.isna(amount_raw):
+            amount = 0.0
+        elif isinstance(amount_raw, str):
+            amount = float(amount_raw.replace('$', '').replace(',', ''))
+        else:
+            amount = float(amount_raw)
+        
+        # Convert find_value to string and handle NaN/None
+        if pd.isna(find_value):
+            find_value = ''
+        else:
+            find_value = str(find_value).strip()
+        
+        # Convert match_value to string and handle NaN/None
+        if pd.isna(match_value):
+            match_value = ''
+        else:
+            match_value = str(match_value).strip()
+        
+        # Skip rows where Find=#N/A and Match contains NOT_RECEIVED
+        if find_value == '#N/A' and 'NOT_RECEIVED' in match_value:
+            continue
+        
+        # Skip if no find value or invalid find value
+        if find_value == '' or find_value == '#N/A' or find_value == '*AUTO MATCH*':
+            continue
+        
+        # Extract year from Find string
+        suffix_pattern = re.compile(r'^(.*?)-(\d{8})-\$?([\d,]+\.[\d]{2})-([A-Z]+)$')
+        match = suffix_pattern.match(find_value)
+        if not match:
+            continue
+        
+        name_part, date_str, dollar_amount_str, coa_abbrev = match.groups()
+        
+        # Extract year
+        if len(date_str) != 8:
+            continue
+        year = int(date_str[:4])
+        
+        if year < 2018:
+            continue
+        
+        # Find the donation using the Find string to get the Family ID
+        donation_row = match_to_donation.get(find_value)
+        
+        if donation_row is None:
+            logging.warning(f"Could not find donation for Find string in Project Assignments (integrity check): {find_value}")
+            continue
+        
+        # Use the Family ID from the donation (which has Override Fam ID applied)
+        family_id = donation_row['Family ID']
+        
+        # Add to totals
+        if year not in assignments_by_family_year:
+            assignments_by_family_year[year] = {}
+        if family_id not in assignments_by_family_year[year]:
+            assignments_by_family_year[year][family_id] = 0
+        
+        assignments_by_family_year[year][family_id] += amount
+    
+    # Step 3: Create family_id to Name(s) mapping from Families DataFrame
+    family_names = {}
+    for idx, row in df_families.iterrows():
+        family_id = row.get('Family ID')
+        name = row.get('Name(s)', '')
+        if family_id:
+            family_names[family_id] = name
+    
+    # Step 4: Compare totals and log errors for mismatches
+    all_years = set(projects_by_family_year.keys()) | set(assignments_by_family_year.keys())
+    
+    error_count = 0
+    for year in sorted(all_years):
+        projects_by_family = projects_by_family_year.get(year, {})
+        assignments_by_family = assignments_by_family_year.get(year, {})
+        
+        all_families = set(projects_by_family.keys()) | set(assignments_by_family.keys())
+        
+        for family_id in sorted(all_families):
+            projects_total = projects_by_family.get(family_id, 0)
+            assignments_total = assignments_by_family.get(family_id, 0)
+            family_name = family_names.get(family_id, f'Family {family_id}')
+            
+            # Check if totals match (within tolerance)
+            if abs(projects_total - assignments_total) > 0.01:
+                error_count += 1
+                logging.error(f"INTEGRITY CHECK FAILED: {family_name} (Family {family_id}) in {year}: Recharacterized Donations Projects total ${projects_total:,.2f} does not match Project Assignments total ${assignments_total:,.2f}")
+    
+    if error_count == 0:
+        logging.info("Projects integrity check PASSED: All Projects donations match Project Assignments by Family ID and year")
+    else:
+        logging.error(f"Projects integrity check FAILED: Found {error_count} mismatch(es) between Recharacterized Donations and Project Assignments")
+
 @app.command()
 def process(
     xlsx_input_file: str = typer.Option(None, help="Path of XLSX input file, which is normally Input.xlsx in the program directory."),
@@ -1098,7 +1251,7 @@ def process(
     
     # Apply inverse recharacterizations and add comments
     # - $0 Project Assignments: recharacterize Projects to General Donation
-    # - Non-zero excess: propose specific inverse recharacterizations (comments only)
+    # - Non-zero excess: apply specific inverse recharacterizations
     df_ilw_recharacterized = apply_inverse_recharacterizations(df_ilw_recharacterized, df_ilw_donations, inverse_rechar_cases, df_ilw_families, project_assignments_path)
     
     # Validate total amounts after inverse recharacterizations
@@ -1107,6 +1260,10 @@ def process(
         logging.error(f"Total amounts do not match after inverse recharacterizations: Original Donations = ${original_total:,.2f}, Recharacterized Donations = ${recharacterized_total_after_inverse:,.2f}, Difference = ${abs(original_total - recharacterized_total_after_inverse):,.2f}")
     else:
         logging.debug(f"Total amounts validated after inverse recharacterizations: Original = ${original_total:,.2f}, Recharacterized = ${recharacterized_total_after_inverse:,.2f}")
+    
+    # Perform integrity check between finalized Recharacterized Donations and Project Assignments
+    # This must be done BEFORE dropping the Year column
+    verify_projects_integrity(df_ilw_recharacterized, df_ilw_donations, df_ilw_families, project_assignments_path)
     
     # Drop Year column from both Donations tabs
     df_ilw_donations = df_ilw_donations.drop(columns=['Year'], axis=1)
