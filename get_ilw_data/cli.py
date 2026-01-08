@@ -585,11 +585,13 @@ def apply_inverse_recharacterizations(df_donations, df_original_donations, inver
         if assignments_total == 0:
             # $0 in Project Assignments: recharacterize from Projects to General Donation (actual change)
             for idx in df[mask].index:
+                donation_amount = df.at[idx, 'Amount']
+                
                 # Recharacterize from Projects to General Donation
                 df.at[idx, 'Simple COA'] = 'General Donation'
                 
                 # Add comment
-                comment = f"Recharacterized from Projects to General Donation - no associated projects in Project Assignments for year {year} for {family_name}"
+                comment = f"Recharacterized Projects to General Donation because there are no associated projects in Project Assignments for this ${donation_amount:,.2f} donation by {family_name}"
                 existing_comment = df.at[idx, 'Comments']
                 
                 if pd.isna(existing_comment) or existing_comment == '':
@@ -597,7 +599,7 @@ def apply_inverse_recharacterizations(df_donations, df_original_donations, inver
                 else:
                     df.at[idx, 'Comments'] = f"{existing_comment}; {comment}"
                 
-                logging.debug(f"Recharacterized ${df.at[idx, 'Amount']:,.2f} from Projects to General Donation for {family_name} (Family {family_id}) in {year}")
+                logging.debug(f"Recharacterized ${donation_amount:,.2f} from Projects to General Donation for {family_name} (Family {family_id}) in {year}")
         else:
             # Non-zero excess: propose specific inverse recharacterizations
             # Check each Projects donation for this family/year
