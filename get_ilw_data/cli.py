@@ -434,11 +434,11 @@ def check_inverse_recharacterizations(df_recharacterized_donations, df_original_
                 # Store for inverse recharacterization
                 inverse_rechar_cases[(year, family_id)] = (donations_total, assignments_total)
                 
-                # Log as DEBUG if $0 in assignments, WARNING otherwise
+                # Log as DEBUG for all inverse recharacterization cases
                 if assignments_total == 0:
                     logging.debug(f"Family {family_id} ({family_name}) in {year}: Projects donations ${donations_total:,.2f} with $0 Project Assignments - will recharacterize to General Donation")
                 else:
-                    logging.warning(f"Family {family_id} ({family_name}) in {year}: Projects donations ${donations_total:,.2f} exceed Project Assignments ${assignments_total:,.2f} by ${excess:,.2f} - inverse recharacterization needed")
+                    logging.debug(f"Family {family_id} ({family_name}) in {year}: Projects donations ${donations_total:,.2f} exceed Project Assignments ${assignments_total:,.2f} by ${excess:,.2f} - inverse recharacterization needed")
             else:
                 # Project assignments exceed Projects donations - this is an error
                 shortfall = assignments_total - donations_total
