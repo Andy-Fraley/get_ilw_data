@@ -1220,7 +1220,7 @@ def process(
     typer.echo(f'Wrote ILW data to {output_filename}')
 
     # Output recharacterization dictionary only if logging level is DEBUG
-    if logging.getLogger().getEffectiveLevel() <= logging.DEBUG:
+    if logging_level.upper() == 'DEBUG':
         typer.echo("\n" + "="*80)
         typer.echo("RECHARACTERIZATIONS SUMMARY")
         typer.echo("="*80)
