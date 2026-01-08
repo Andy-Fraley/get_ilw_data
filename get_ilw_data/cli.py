@@ -448,13 +448,13 @@ def check_inverse_recharacterizations(df_recharacterized_donations, df_original_
 
 def apply_inverse_recharacterizations(df_donations, df_original_donations, inverse_rechar_cases, df_families, project_assignments_path):
     """
-    Propose inverse recharacterizations and add detailed comments to donations.
+    Apply inverse recharacterizations for donations exceeding Project Assignments.
     
     For families with Projects donations exceeding Project Assignments:
     - If $0 in Project Assignments: recharacterize from Projects to General Donation (actual change)
-    - If non-zero excess: propose specific inverse recharacterizations (comments only, no changes)
-      - Case 1: Original donation not in Project Assignments Find column -> propose 100% recharacterization
-      - Case 2: Donation amount exceeds Project Assignment amount and overage equals family discrepancy -> propose split
+    - If non-zero excess: apply specific inverse recharacterizations
+      - Case 1: Original donation not in Project Assignments Find column -> recharacterize 100% to General Donation
+      - Case 2: Donation amount exceeds Project Assignment amount and overage equals family discrepancy -> split donation
     
     Args:
         df_donations: DataFrame of recharacterized donations to modify
@@ -464,10 +464,13 @@ def apply_inverse_recharacterizations(df_donations, df_original_donations, inver
         project_assignments_path: Path to project_assignments.xlsx file
     
     Returns:
-        Modified DataFrame with inverse recharacterizations applied and comments added
+        Modified DataFrame with inverse recharacterizations applied
     """
     # Create a copy to avoid modifying the original
     df = df_donations.copy()
+    
+    # Track new rows to add (for Case 2 splits)
+    new_rows = []
     
     # Ensure Comments column exists
     if 'Comments' not in df.columns:
@@ -638,6 +641,7 @@ def apply_inverse_recharacterizations(df_donations, df_original_donations, inver
                     logging.debug(f"Recharacterized ${donation_amount:,.2f} from Projects to General Donation (original not in Project Assignments) for {family_name} (Family {family_id}) in {year}")
                 
                 # Case 2: Original donation IS in Project Assignments but amount exceeds Project Assignment amount
+                # IMPLEMENT: Split donation into two rows
                 elif original_match_string in find_to_amount:
                     project_assignment_amount = find_to_amount[original_match_string]
                     
@@ -646,15 +650,36 @@ def apply_inverse_recharacterizations(df_donations, df_original_donations, inver
                         
                         # Check if overage equals the family's total excess (within tolerance)
                         if abs(overage - excess) <= 0.01:
-                            comment = f"PROPOSE: Split this donation - leave ${project_assignment_amount:,.2f} as Projects (matching Project Assignment) and create new entry for ${overage:,.2f} as General Donation (overage)"
+                            # Split the donation into two rows
+                            # First row: Project Assignment amount, stays as Projects
+                            df.at[idx, 'Amount'] = project_assignment_amount
+                            comment1 = f"Projects donation of ${donation_amount:,.2f} by {family_name} was split in two and this portion exactly matches the funded project amount of ${project_assignment_amount:,.2f}"
                             existing_comment = df.at[idx, 'Comments']
                             
                             if pd.isna(existing_comment) or existing_comment == '':
-                                df.at[idx, 'Comments'] = comment
+                                df.at[idx, 'Comments'] = comment1
                             else:
-                                df.at[idx, 'Comments'] = f"{existing_comment}; {comment}"
+                                df.at[idx, 'Comments'] = f"{existing_comment}; {comment1}"
                             
-                            logging.debug(f"Proposed split for ${donation_amount:,.2f} donation (keep ${project_assignment_amount:,.2f} as Projects, ${overage:,.2f} to General Donation) for {family_name} (Family {family_id}) in {year}")
+                            # Second row: Overage amount, change to General Donation
+                            new_row = donation_row.copy()
+                            new_row['Amount'] = overage
+                            new_row['Simple COA'] = 'General Donation'
+                            comment2 = f"Projects donation of ${donation_amount:,.2f} by {family_name} was split in two and this portion exactly matches the overage of ${overage:,.2f} above funded project amount of ${project_assignment_amount:,.2f}"
+                            new_row['Comments'] = comment2
+                            
+                            # Store the new row to be inserted after the original
+                            new_rows.append((idx, new_row))
+                            
+                            logging.debug(f"Split ${donation_amount:,.2f} donation: ${project_assignment_amount:,.2f} as Projects, ${overage:,.2f} as General Donation for {family_name} (Family {family_id}) in {year}")
+    
+    # Insert new rows right after their corresponding original rows
+    # Sort by index in reverse order to maintain correct positions
+    for orig_idx, new_row in sorted(new_rows, key=lambda x: x[0], reverse=True):
+        # Get the position after the original row
+        pos = df.index.get_loc(orig_idx) + 1
+        # Insert the new row
+        df = pd.concat([df.iloc[:pos], pd.DataFrame([new_row]), df.iloc[pos:]]).reset_index(drop=True)
     
     return df
 
