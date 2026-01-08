@@ -526,20 +526,52 @@ def apply_inverse_recharacterizations(df_donations, df_original_donations, inver
         else:
             find_to_amount[find_value] = amount
     
+    # Create a mapping from (Family ID, Date) to list of original donations
+    # This handles cases where donations were split during forward recharacterization
+    # Multiple recharacterized donations may map to the same original donation
+    original_by_family_date = {}
+    for orig_idx, orig_row in df_original_donations.iterrows():
+        key = (orig_row['Family ID'], orig_row['Date'])
+        if key not in original_by_family_date:
+            original_by_family_date[key] = []
+        original_by_family_date[key].append(orig_row)
+    
     # Create a mapping from Recharacterized Donations index to Original Donations row
-    # This allows us to find the original donation for each recharacterized donation
-    # We'll match on Family ID, Date, and original Amount (before any splits)
+    # For forward-recharacterized donations (split donations), we need to find the original
+    # by matching on Family ID and Date, then selecting the original with matching COA
     rechar_to_original = {}
     for rechar_idx, rechar_row in df.iterrows():
-        # Try to find matching original donation by Family ID, Date, and Amount
-        # Note: Amount in Original Donations should match the recharacterized amount for Projects donations
-        # that were originally Projects (not forward-recharacterized)
-        for orig_idx, orig_row in df_original_donations.iterrows():
-            if (rechar_row['Family ID'] == orig_row['Family ID'] and
-                rechar_row['Date'] == orig_row['Date'] and
-                abs(rechar_row['Amount'] - orig_row['Amount']) < 0.01):
+        key = (rechar_row['Family ID'], rechar_row['Date'])
+        
+        if key not in original_by_family_date:
+            continue
+        
+        original_donations = original_by_family_date[key]
+        
+        # Strategy 1: Try exact amount match first (for non-split donations)
+        for orig_row in original_donations:
+            if abs(rechar_row['Amount'] - orig_row['Amount']) < 0.01:
                 rechar_to_original[rechar_idx] = orig_row
                 break
+        
+        # Strategy 2: If no exact match and this is a Projects donation, check if it was forward-recharacterized
+        # Look for an original donation where the recharacterized amount is less than or equal to original
+        if rechar_idx not in rechar_to_original and rechar_row['Simple COA'] == 'Projects':
+            # Check Comments field for forward recharacterization indicator
+            comments = rechar_row.get('Comments', '')
+            if pd.notna(comments) and 'recharacterized from' in str(comments).lower() and 'to Projects' in str(comments):
+                # This was forward-recharacterized - find the original donation
+                # The original should have a different COA and amount >= recharacterized amount
+                for orig_row in original_donations:
+                    if (orig_row['Simple COA'] != 'Projects' and 
+                        orig_row['Amount'] >= rechar_row['Amount'] - 0.01):
+                        rechar_to_original[rechar_idx] = orig_row
+                        break
+        
+        # Strategy 3: If still no match, just use the first original donation for this Family ID/Date
+        # This is a fallback for edge cases
+        if rechar_idx not in rechar_to_original and len(original_donations) > 0:
+            rechar_to_original[rechar_idx] = original_donations[0]
     
     # Process each case that needs inverse recharacterization
     for (year, family_id), (donations_total, assignments_total) in inverse_rechar_cases.items():
