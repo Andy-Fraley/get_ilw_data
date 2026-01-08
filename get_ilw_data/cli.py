@@ -620,8 +620,12 @@ def apply_inverse_recharacterizations(df_donations, df_original_donations, inver
                     continue
                 
                 # Case 1: Original donation NOT in Project Assignments Find column
+                # IMPLEMENT: Recharacterize from Projects to General Donation
                 if original_match_string not in find_values_set:
-                    comment = f"PROPOSE: Recharacterize 100% (${donation_amount:,.2f}) from Projects to General Donation - original donation not referenced in Project Assignments Find column"
+                    # Recharacterize from Projects to General Donation
+                    df.at[idx, 'Simple COA'] = 'General Donation'
+                    
+                    comment = f"Recharacterized this ${donation_amount:,.2f} donation from Projects to General Donation because it was not referenced in the Project Assignments Find column"
                     existing_comment = df.at[idx, 'Comments']
                     
                     if pd.isna(existing_comment) or existing_comment == '':
@@ -629,7 +633,7 @@ def apply_inverse_recharacterizations(df_donations, df_original_donations, inver
                     else:
                         df.at[idx, 'Comments'] = f"{existing_comment}; {comment}"
                     
-                    logging.debug(f"Proposed 100% inverse recharacterization for ${donation_amount:,.2f} donation (original not in Project Assignments) for {family_name} (Family {family_id}) in {year}")
+                    logging.debug(f"Recharacterized ${donation_amount:,.2f} from Projects to General Donation (original not in Project Assignments) for {family_name} (Family {family_id}) in {year}")
                 
                 # Case 2: Original donation IS in Project Assignments but amount exceeds Project Assignment amount
                 elif original_match_string in find_to_amount:
